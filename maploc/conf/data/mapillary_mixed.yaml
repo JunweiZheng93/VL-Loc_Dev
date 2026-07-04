@@ -1,0 +1,85 @@
+name: mapillary_mixed
+scenes:
+  - RHO_motion_blur/berlin
+  - RHO_motion_blur/chicago
+  - RHO_motion_blur/detroit
+  - RHO_motion_blur/montrouge
+  - RHO_motion_blur/sanfrancisco
+  - RHO_motion_blur/toulouse
+  - RHO_motion_blur/washington
+  - RHO_snowy/berlin
+  - RHO_snowy/chicago
+  - RHO_snowy/detroit
+  - RHO_snowy/montrouge
+  - RHO_snowy/sanfrancisco
+  - RHO_snowy/toulouse
+  - RHO_snowy/washington
+  - RHO_clean/berlin
+  - RHO_clean/chicago
+  - RHO_clean/detroit
+  - RHO_clean/montrouge
+  - RHO_clean/sanfrancisco
+  - RHO_clean/toulouse
+  - RHO_clean/washington
+  - RHO_rainy/berlin
+  - RHO_rainy/chicago
+  - RHO_rainy/detroit
+  - RHO_rainy/montrouge
+  - RHO_rainy/sanfrancisco
+  - RHO_rainy/toulouse
+  - RHO_rainy/washington
+  - RHO_night/berlin
+  - RHO_night/chicago
+  - RHO_night/detroit
+  - RHO_night/montrouge
+  - RHO_night/sanfrancisco
+  - RHO_night/toulouse
+  - RHO_night/washington
+  - RHO_foggy/berlin
+  - RHO_foggy/chicago
+  - RHO_foggy/detroit
+  - RHO_foggy/montrouge
+  - RHO_foggy/sanfrancisco
+  - RHO_foggy/toulouse
+  - RHO_foggy/washington
+  - RHO_over_exposure/berlin
+  - RHO_over_exposure/chicago
+  - RHO_over_exposure/detroit
+  - RHO_over_exposure/montrouge
+  - RHO_over_exposure/sanfrancisco
+  - RHO_over_exposure/toulouse
+  - RHO_over_exposure/washington
+  - RHO_under_exposure/berlin
+  - RHO_under_exposure/chicago
+  - RHO_under_exposure/detroit
+  - RHO_under_exposure/montrouge
+  - RHO_under_exposure/sanfrancisco
+  - RHO_under_exposure/toulouse
+  - RHO_under_exposure/washington
+
+
+split: splits_RHO_mixed_val_sampled2.json
+loading:
+  train:
+    batch_size: 96
+    num_workers: ${.batch_size}
+  val:
+    batch_size: ${..train.batch_size}
+    num_workers: ${.batch_size}
+# map data
+num_classes:
+  areas: 7
+  ways: 10
+  nodes: 33
+pixel_per_meter: 2
+crop_size_meters: 64
+max_init_error: 48
+add_map_mask: true
+# preprocessing
+resize_image: 512
+pad_to_square: true
+rectify_pitch: true
+augmentation:
+  rot90: true
+  flip: true
+  image: {apply: true}
