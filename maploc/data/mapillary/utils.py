@@ -117,15 +117,15 @@ def render_panorama(
     offset: float = 0.0,
 ) -> Tuple[List[Shot], List[np.ndarray]]:
     # Change the yaw according to the degree of your FoV
-    yaws = [0, 120, 240]
-    suffixes = ["view1", "view2", "view3"]
+    yaws = [0, 90, 180, 270]
+    suffixes = ["front", "left", "back", "right"]
     images = []
     shots = []
 
     # To reduce aliasing, since cv2.remap does not support area samplimg,
     # we first resize with anti-aliasing.
     h, w = undistorter.shape
-    h, w = (int(w * 1.5), w * 3)  # w : h = 2:1 for pano
+    h, w = (w * 1.5, w * 3)  # assuming 90deg FOV
     pano_resized = cv2.resize(pano, (w, h), interpolation=cv2.INTER_AREA)
 
     for yaw, suffix in zip(yaws, suffixes):

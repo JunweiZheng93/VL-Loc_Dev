@@ -8,7 +8,7 @@ scenes:
   - toulouse
   - washington
 
-split: splits_RHO_clean.json
+split: splits_MGL_final.json
 loading:
   train:
     batch_size: 36

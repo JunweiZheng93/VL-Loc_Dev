@@ -25,12 +25,12 @@ class Location2DRecall(torchmetrics.MeanMetric):
         super().__init__(*args, **kwargs)
 
     def update(self, pred, data):
-
+        # --- FIX START ---
         is_panorama = pred.get("is_panorama", False)
         uv_gt = data["uv"]
         if is_panorama:
             uv_gt = uv_gt[::3]
-
+        # --- FIX END ---
         error = location_error(pred[self.key], uv_gt, self.ppm)
         super().update((error <= self.threshold).float())
 
@@ -42,10 +42,12 @@ class AngleRecall(torchmetrics.MeanMetric):
         super().__init__(*args, **kwargs)
 
     def update(self, pred, data):
+        # --- FIX START ---
         is_panorama = pred.get("is_panorama", False)
         yaw_gt = data["roll_pitch_yaw"][..., -1]
         if is_panorama:
             yaw_gt = data["roll_pitch_yaw"][::3, -1]
+        # --- FIX END ---
         error = angle_error(pred[self.key], yaw_gt)
         
         super().update((error <= self.threshold).float())
@@ -76,10 +78,12 @@ class AngleError(MeanMetricWithRecall):
         self.key = key
 
     def update(self, pred, data):
+        # --- FIX START ---
         is_panorama = pred.get("is_panorama", False)
-        yaw_gt = data["roll_pitch_yaw"][..., -1]
+        yaw_gt = data["roll_pitch_yaw"][..., -1].to(pred[self.key].device)
         if is_panorama:
-            yaw_gt = data["roll_pitch_yaw"][::3, -1]
+            yaw_gt = data["roll_pitch_yaw"][::3, -1].to(pred[self.key].device)
+        # --- FIX END ---
         value = angle_error(pred[self.key], yaw_gt)
         if value.numel():
             self.value.append(value)
@@ -92,10 +96,12 @@ class Location2DError(MeanMetricWithRecall):
         self.ppm = pixel_per_meter
 
     def update(self, pred, data):
+        # --- FIX START ---
         is_panorama = pred.get("is_panorama", False)
-        uv_gt = data["uv"]
+        uv_gt = data["uv"].to(pred[self.key].device)
         if is_panorama:
             uv_gt = uv_gt[::3]
+        # --- FIX END ---
         value = location_error(pred[self.key], uv_gt, self.ppm)
         if value.numel():
             self.value.append(value)
@@ -109,11 +115,11 @@ class LateralLongitudinalError(MeanMetricWithRecall):
 
     def update(self, pred, data):
         is_panorama = pred.get("is_panorama", False)
-        uv_gt = data["uv"]
-        yaw = deg2rad(data["roll_pitch_yaw"][..., -1])
+        uv_gt = data["uv"].to(pred[self.key].device)
+        yaw = deg2rad(data["roll_pitch_yaw"][..., -1]).to(pred[self.key].device)
         if is_panorama:
-            uv_gt = uv_gt[::3]
-            yaw = deg2rad(data["roll_pitch_yaw"][::3, -1])
+            uv_gt = data["uv"][::3].to(pred[self.key].device)
+            yaw = deg2rad(data["roll_pitch_yaw"][::3, -1]).to(pred[self.key].device)
         shift = (pred[self.key] - uv_gt) * yaw.new_tensor([-1, 1])
         shift = (rotmat2d(yaw) @ shift.unsqueeze(-1)).squeeze(-1)
         error = torch.abs(shift) / self.ppm

@@ -10,6 +10,8 @@ import torch.utils.data as torchdata
 import torchvision.transforms as tvf
 from omegaconf import DictConfig, OmegaConf
 
+from scipy.ndimage import distance_transform_edt
+
 from ..models.utils import deg2rad, rotmat2d
 from ..osm.tiling import TileManager
 from ..utils.geo import BoundaryBox
@@ -36,6 +38,9 @@ class MapLocDataset(torchdata.Dataset):
         "force_camera_height": None,
         # pose priors
         "add_map_mask": False,
+        # road constraint prior
+        "add_road_prior": False,
+        "road_prior_sigma": 10.0,
         "mask_radius": None,
         "mask_pad": 1,
         "prior_range_rotation": None,
@@ -174,6 +179,11 @@ class MapLocDataset(torchdata.Dataset):
         if self.cfg.add_map_mask:
             data["map_mask"] = torch.from_numpy(self.create_map_mask(canvas))
 
+        if self.cfg.add_road_prior:
+            data["road_prior"] = torch.from_numpy(
+                self.create_road_prior(raster[1], canvas.ppm)
+            )
+
         if self.cfg.max_init_error_rotation is not None:
             if "shifts" in self.data:
                 error = self.data["shifts"][idx][-1]
@@ -267,3 +277,30 @@ class MapLocDataset(torchdata.Dataset):
         ).astype(int)
         map_mask[mask_min[1] : mask_max[1], mask_min[0] : mask_max[0]] = True
         return map_mask
+
+    def create_road_prior(self, ways_raster, ppm):
+        """Compute a soft Gaussian log-prior based on distance to OSM roads.
+
+        Args:
+            ways_raster: np.ndarray [H, W] -- the 'ways' channel of the raster,
+                         already augmented (rot90/flip applied). Values: 0 = no road,
+                         >0 = road class index.
+            ppm: float -- pixels per meter of the canvas.
+
+        Returns:
+            log_prior: np.ndarray [H, W], float32. Values are <= 0.
+                       0 on road pixels, negative Gaussian decay off-road.
+                       All zeros if no road exists in the tile.
+        """
+        road_mask = ways_raster > 0
+
+        if not road_mask.any():
+            return np.zeros(ways_raster.shape, dtype=np.float32)
+
+        dist_pixels = distance_transform_edt(~road_mask)
+        dist_meters = dist_pixels / ppm
+
+        sigma = self.cfg.road_prior_sigma
+        log_prior = -0.5 * (dist_meters / sigma) ** 2
+
+        return log_prior.astype(np.float32)

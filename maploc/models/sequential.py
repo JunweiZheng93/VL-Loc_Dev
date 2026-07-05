@@ -166,9 +166,9 @@ class RigidAligner:
         self.yaw_ref_align = uvt_align_ref[-1]
         self.xy_ref_align = self.canvas.to_xy(uvt_align_ref[:2].double())
 
-        self.yaw_slam2geo = self.yaw_ref - self.yaw_ref_align
+        self.yaw_slam2geo = self.yaw_ref.to(self.yaw_ref_align) - self.yaw_ref_align
         R_slam2geo = rotmat2d(deg2rad(self.yaw_slam2geo))
-        t_slam2geo = self.xy_ref_align - R_slam2geo @ self.xy_ref
+        t_slam2geo = self.xy_ref_align - R_slam2geo @ self.xy_ref.to(R_slam2geo)
         self.Rt_slam2geo = (R_slam2geo, t_slam2geo)
 
     def transform(self, xy, yaw):

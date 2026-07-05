@@ -108,7 +108,9 @@ def register_batch_size_resolvers():
       return int(a) * int(b)
   
   def eval_expr(expr):
+      # 安全的数学表达式评估
       import re
+      # 只允许数字、空格、基本运算符
       if re.match(r'^[\d\s\+\-\*/\(\)\.]+$', expr):
           return eval(expr)
       else:
@@ -234,7 +236,7 @@ def train(cfg: DictConfig, job_id: Optional[int] = None):
 
 
 @hydra.main(
-    config_path=osp.join(osp.dirname(__file__), "conf"), config_name="orienternet_120fov"
+    config_path=osp.join(osp.dirname(__file__), "conf"), config_name="orienternet_120"
 )
 def main(cfg: DictConfig) -> None:
     register_batch_size_resolvers()

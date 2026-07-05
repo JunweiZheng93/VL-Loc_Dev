@@ -182,7 +182,7 @@ async def fetch_images_pixels(image_urls, downloader, dir_, overwrite=False):
     return num_fail
 
 
-def split_bbox(bbox: BoundaryBox) -> Tuple[BoundaryBox]:
+def split_bbox(bbox: BoundaryBox) -> tuple[BoundaryBox]:
     midpoint = bbox.center
     return (
         BoundaryBox(bbox.min_, midpoint),

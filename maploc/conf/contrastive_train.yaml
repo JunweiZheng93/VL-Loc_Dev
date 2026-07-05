@@ -1,0 +1,59 @@
+defaults:
+  - orienternet_cl # Inherit defaults from the base orienternet_cl.yaml
+  - _self_
+experiment:
+  base_batch_size: 8
+training:
+  finetune_from_checkpoint: null
+data:
+  name: kitti_contrastive
+  sampler:
+    name: min_distance
+    min_distance: 10.0
+  loading:
+    train:
+      batch_size: ${eval:'${experiment.base_batch_size} * ${experiment.gpus}'}
+      num_workers: 16
+    val:
+      batch_size: 4
+      num_workers: ${..train.num_workers}
+    test:
+      batch_size: 4
+      num_workers: 4
+
+  # Define the anchor dataset (clean KITTI)
+  anchor:
+    name: kitti
+  # Define all positive datasets (noisy KITTI)
+  positives:
+    rainy:
+      name: kitti_rainy
+    night:
+      name: kitti_night
+    cloudy:
+      name: kitti_cloudy
+    foggy:
+       name: kitti_foggy
+    motion_blur:
+      name: kitti_motion_blur
+    over_exposure:
+      name: kitti_over
+    under_exposure:
+      name: kitti_under
+
+model:
+  embedding_monitor_interval: 500
+  contrastive_loss_weight: 8
+  contrastive_temperature: 0.4
+  image_encoder:
+    backbone: 
+      encoder: resnet101
+    global_descriptor:
+      dim: 256
+      type: simclr
+      hidden_dim: 512
+      num_layers: 2
+      dropout: 0.1
+      use_bn: true
+      pooling: gem
+      gem_p: 3.0

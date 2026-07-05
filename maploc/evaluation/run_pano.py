@@ -134,12 +134,13 @@ def evaluate_sequential(
     mask_index: Optional[Tuple[int]] = None,
     has_gps: bool = False,
 ):
+    num_views = 3
     chunk_keys = list(chunk2idx)
     if shuffle:
         chunk_keys = [chunk_keys[i] for i in torch.randperm(len(chunk_keys))]
     if num is not None:
         chunk_keys = chunk_keys[:num]
-    lengths = [len(chunk2idx[k]) // 3 for k in chunk_keys] # Length in panoramas
+    lengths = [len(chunk2idx[k]) // num_views for k in chunk_keys] # Length in panoramas
     logger.info(
         "Min/max/med panorama lengths: %d/%d/%d, total number of panoramas: %d",
         min(lengths),
@@ -169,25 +170,36 @@ def evaluate_sequential(
 
     for chunk_index, key in enumerate(tqdm(chunk_keys, disable=not progress)):
         indices = chunk2idx[key]
-        num_panoramas_in_chunk = len(indices) // 3
+        num_panoramas_in_chunk = len(indices) // num_views
         
+        if num_panoramas_in_chunk == 0:
+            continue
+
         aligner = RigidAligner(track_priors=viz, num_rotations=num_rotations)
         if has_gps:
             aligner_gps = GPSAligner(track_priors=viz, num_rotations=num_rotations)
-            
+
         gt_batches = []
         preds = []
-        
+
         for i in range(num_panoramas_in_chunk):
             start_idx = i * num_views
-            # Manually create a batch of 3 for one panorama
-            batch_list = [dataset[indices[start_idx]], dataset[indices[start_idx+1]], dataset[indices[start_idx+2]]]
+            # Manually create a batch of num_views for one panorama
+            batch_list = [dataset[indices[start_idx + v]] for v in range(num_views)]
             batch_ = collate(batch_list)
-            
+
             # Ground truth and canvas are taken from the main view (view 1)
             gt_data = batch_list[0]
-            
-            pred = model(model.transfer_batch_to_device(batch_, model.device, 0))
+
+            batch = model.transfer_batch_to_device(batch_, model.device, 0)
+
+            # Ablation: mask semantic classes on all views
+            if mask_index is not None:
+                for view_idx in range(num_views):
+                    mask = batch["map"][view_idx, mask_index[0]] == (mask_index[1] + 1)
+                    batch["map"][view_idx, mask_index[0]][mask] = 0
+
+            pred = model(batch)
 
             canvas = gt_data["canvas"]
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
@@ -207,7 +219,7 @@ def evaluate_sequential(
             
             gt_batches.append(gt_data)
             preds.append({k: pred[k][0] for k in keys_save})
-            del pred, batch_
+            del pred, batch, batch_
 
         xy_gt = torch.stack([b["xy_geo"] for b in gt_batches])
         yaw_gt = torch.stack([b["yaw"] for b in gt_batches])

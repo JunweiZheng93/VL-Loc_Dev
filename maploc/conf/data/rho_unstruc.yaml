@@ -1,0 +1,34 @@
+name: mapillary_pano
+scenes:
+  - neuanspach
+  # - tirol
+
+
+split: splits_RHO_neuanspach.json
+# split: splits_RHO_tirol.json
+loading:
+  train:
+    batch_size: 36
+    num_workers: ${.batch_size}
+  val:
+    batch_size: ${..train.batch_size}
+    num_workers: ${.batch_size}
+# map data
+num_classes:
+  areas: 7
+  ways: 10
+  nodes: 33
+pixel_per_meter: 2
+crop_size_meters: 64
+max_init_error: 48
+add_map_mask: true
+add_road_prior: true
+road_prior_sigma: 10.0
+# preprocessing
+resize_image: 512
+pad_to_square: true
+rectify_pitch: true
+augmentation:
+  rot90: true
+  flip: true
+  image: {apply: true}

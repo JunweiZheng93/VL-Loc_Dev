@@ -26,7 +26,7 @@ from ...osm.viz import GeoPlotter
 from ...utils.geo import BoundaryBox, Projection
 from ...utils.io import write_json
 from ..utils import decompose_rotmat
-from .config import default_cfg, location_to_params
+from .config_one import default_cfg, location_to_params
 from .dataset import MapillaryDataModule
 from .download import (
     MapillaryDownloader,
