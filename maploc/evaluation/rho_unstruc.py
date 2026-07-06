@@ -36,14 +36,7 @@ model_cfg = OmegaConf.create(
     }
 )
 default_cfg_single = OmegaConf.create({"data": data_cfg, "model": model_cfg})
-default_cfg_sequential = OmegaConf.create(
-    {
-        **default_cfg_single,
-        "chunking": {
-            "max_length": 90,
-        },
-    }
-)
+default_cfg_sequential = default_cfg_single
 
 
 def run(
@@ -87,19 +80,16 @@ if __name__ == "__main__":
     parser.add_argument("--experiment", type=str, required=True)
     parser.add_argument("--split", type=str, default="val", choices=["val"])
     parser.add_argument("--sequential", action="store_true")
-    parser.add_argument("--seq_mode", type=str, default="online", choices=["online", "offline"])
     parser.add_argument("--output_dir", type=Path)
     parser.add_argument("--num", type=int)
     parser.add_argument("dotlist", nargs="*")
     args = parser.parse_args()
     cfg = OmegaConf.from_cli(args.dotlist)
-    kwargs = dict(output_dir=args.output_dir, num=args.num)
-    if args.sequential:
-        kwargs["seq_mode"] = args.seq_mode
     run(
         args.split,
         args.experiment,
         cfg,
         args.sequential,
-        **kwargs,
+        output_dir=args.output_dir,
+        num=args.num,
     )

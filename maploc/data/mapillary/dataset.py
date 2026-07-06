@@ -1490,31 +1490,40 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
         return self.dataloader("test", **kwargs)
 
     def sequence_dataset(self, stage: str, **kwargs):
+        """Group the data by real trajectory, one key per trajectory.
+
+        The dump stores one sequence per view stream ("<trajectory>_view<i>"),
+        while the packed rows are ordered as complete panoramas (view1/2/3
+        consecutively). Grouping by the dump sequence would therefore pair
+        same-view images of different panoramas. Instead, panoramas (row
+        triples) are grouped by their trajectory id and ordered by capture
+        time; the indices of a key are pano-major (view1, view2, view3 per
+        panorama). Sequences are not chunked; chunking kwargs are ignored.
+        """
         keys = self.splits[stage]
-        seq2indices = defaultdict(list)
-        for index, (_, seq, _) in enumerate(keys):
-            seq2indices[seq].append(index)
-        # chunk the sequences to the required length
-        chunk2indices = {}
-        for seq, indices in seq2indices.items():
-            chunks = chunk_sequence(self.data[stage], indices, **kwargs)
-            for i, sub_indices in enumerate(chunks):
-                chunk2indices[seq, i] = sub_indices
-        # store the index of each chunk in its sequence
-        chunk_indices = torch.full((len(keys),), -1)
-        for (_, chunk_index), idx in chunk2indices.items():
-            chunk_indices[idx] = chunk_index
-        self.data[stage]["chunk_index"] = chunk_indices
+        data = self.data[stage]
+        traj2panos = defaultdict(list)
+        for row in range(0, len(keys), self.num_views):
+            scene, seq, _ = keys[row]
+            traj = seq.rsplit("_", 1)[0]
+            time = data["capture_time"][row].tolist()  # shared by the 3 views
+            traj2panos[scene, traj].append((time, row))
+        seq2indices = {}
+        for traj, panos in traj2panos.items():
+            rows = [row for _, row in sorted(panos)]
+            seq2indices[traj] = [
+                row + view for row in rows for view in range(self.num_views)
+            ]
         dataset = self.dataset(stage)
-        return dataset, chunk2indices
+        return dataset, seq2indices
 
     def sequence_dataloader(self, stage: str, shuffle: bool = False, **kwargs):
-        dataset, chunk2idx = self.sequence_dataset(stage, **kwargs)
-        chunk_keys = sorted(chunk2idx)
+        dataset, seq2idx = self.sequence_dataset(stage, **kwargs)
+        seq_keys = sorted(seq2idx)
         if shuffle:
-            perm = torch.randperm(len(chunk_keys))
-            chunk_keys = [chunk_keys[i] for i in perm]
-        key_indices = [i for key in chunk_keys for i in chunk2idx[key]]
+            perm = torch.randperm(len(seq_keys))
+            seq_keys = [seq_keys[i] for i in perm]
+        key_indices = [i for key in seq_keys for i in seq2idx[key]]
         num_workers = self.cfg["loading"][stage]["num_workers"]
         loader = torchdata.DataLoader(
             dataset,
@@ -1527,7 +1536,7 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
             worker_init_fn=worker_init_fn,
             collate_fn=collate,
         )
-        return loader, chunk_keys, chunk2idx
+        return loader, seq_keys, seq2idx
 
 class MapillaryPanoMixedDataModule(pl.LightningDataModule):
     dump_filename = "dump.json"

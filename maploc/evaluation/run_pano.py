@@ -124,7 +124,7 @@ def evaluate_single_image(
 @torch.no_grad()
 def evaluate_sequential(
     dataset: torch.utils.data.Dataset,
-    chunk2idx: Dict,
+    seq2idx: Dict,
     model: GenericModule,
     num: Optional[int] = None,
     shuffle: bool = False,
@@ -133,24 +133,23 @@ def evaluate_sequential(
     num_rotations: int = 512,
     mask_index: Optional[Tuple[int]] = None,
     has_gps: bool = False,
-    seq_mode: str = "online",
 ):
-    """seq_mode selects how the sequence estimates (uv_seq/yaw_seq) are computed:
-    - "online": causal recursive filtering; each frame's estimate only uses
-      past observations (argmax of the belief after each update_with_ref).
-    - "offline": rigid alignment of the full sequence, then all frames are
-      re-localized with the aligned transform (non-causal).
+    """Online (causal) sequential evaluation of each trajectory.
+
+    Each key of seq2idx is one real trajectory (never mixed or chunked).
+    Each frame's estimate (uv_seq/yaw_seq) is the argmax of the recursive
+    belief right after fusing that frame's observation, i.e. it only uses
+    past observations.
     """
-    assert seq_mode in ("online", "offline"), seq_mode
     num_views = 3
-    chunk_keys = list(chunk2idx)
+    seq_keys = list(seq2idx)
     if shuffle:
-        chunk_keys = [chunk_keys[i] for i in torch.randperm(len(chunk_keys))]
+        seq_keys = [seq_keys[i] for i in torch.randperm(len(seq_keys))]
     if num is not None:
-        chunk_keys = chunk_keys[:num]
-    lengths = [len(chunk2idx[k]) // num_views for k in chunk_keys] # Length in panoramas
+        seq_keys = seq_keys[:num]
+    lengths = [len(seq2idx[k]) // num_views for k in seq_keys] # Length in panoramas
     logger.info(
-        "Min/max/med panorama lengths: %d/%d/%d, total number of panoramas: %d",
+        "Min/max/med trajectory lengths: %d/%d/%d, total number of panoramas: %d",
         min(lengths),
         np.median(lengths),
         max(lengths),
@@ -176,19 +175,14 @@ def evaluate_sequential(
     if viz:
         keys_save.append("log_probs")
 
-    for chunk_index, key in enumerate(tqdm(chunk_keys, disable=not progress)):
-        indices = chunk2idx[key]
-        num_panoramas_in_chunk = len(indices) // num_views
-        
-        if num_panoramas_in_chunk == 0:
+    for seq_index, key in enumerate(tqdm(seq_keys, disable=not progress)):
+        indices = seq2idx[key]
+        num_panoramas = len(indices) // num_views
+
+        if num_panoramas == 0:
             continue
 
-        if seq_mode == "online":
-            # The belief follows the current frame; each frame's estimate is
-            # causal (argmax of the belief right after fusing the observation).
-            aligner = RigidAligner()
-        else:
-            aligner = RigidAligner(track_priors=viz, num_rotations=num_rotations)
+        aligner = RigidAligner()
         if has_gps:
             aligner_gps = GPSAligner(track_priors=viz, num_rotations=num_rotations)
 
@@ -196,7 +190,7 @@ def evaluate_sequential(
         preds = []
         uvt_online = []
 
-        for i in range(num_panoramas_in_chunk):
+        for i in range(num_panoramas):
             start_idx = i * num_views
             # Manually create a batch of num_views for one panorama
             batch_list = [dataset[indices[start_idx + v]] for v in range(num_views)]
@@ -218,11 +212,8 @@ def evaluate_sequential(
             canvas = gt_data["canvas"]
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
             gt_data["yaw"] = yaw = gt_data["roll_pitch_yaw"][-1].double()
-            if seq_mode == "online":
-                aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw)
-                uvt_online.append(argmax_xyr(aligner.belief))
-            else:
-                aligner.update(pred["log_probs"][0], canvas, xy, yaw)
+            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw)
+            uvt_online.append(argmax_xyr(aligner.belief))
 
             if has_gps:
                 (uv_gps,) = pred["uv_gps"] = gt_data["uv_gps"][None]
@@ -239,23 +230,16 @@ def evaluate_sequential(
             preds.append({k: pred[k][0] for k in keys_save})
             del pred, batch, batch_
 
-        xy_gt = torch.stack([b["xy_geo"] for b in gt_batches])
-        yaw_gt = torch.stack([b["yaw"] for b in gt_batches])
-        if seq_mode == "offline":
-            aligner.compute()
-            xy_seq, yaw_seq = aligner.transform(xy_gt, yaw_gt)
         if has_gps:
+            xy_gt = torch.stack([b["xy_geo"] for b in gt_batches])
+            yaw_gt = torch.stack([b["yaw"] for b in gt_batches])
             aligner_gps.compute()
             xy_gps_seq, yaw_gps_seq = aligner_gps.transform(xy_gt, yaw_gt)
             
         results = []
-        for i in range(num_panoramas_in_chunk):
-            if seq_mode == "online":
-                preds[i]["uv_seq"] = uvt_online[i][:2].float()
-                preds[i]["yaw_seq"] = uvt_online[i][-1].float()
-            else:
-                preds[i]["uv_seq"] = gt_batches[i]["canvas"].to_uv(xy_seq[i]).float()
-                preds[i]["yaw_seq"] = yaw_seq[i].float()
+        for i in range(num_panoramas):
+            preds[i]["uv_seq"] = uvt_online[i][:2].float()
+            preds[i]["yaw_seq"] = uvt_online[i][-1].float()
             if has_gps:
                 preds[i]["uv_gps_seq"] = (
                     gt_batches[i]["canvas"].to_uv(xy_gps_seq[i]).float()
@@ -270,7 +254,7 @@ def evaluate_sequential(
             results.append(metrics(preds[i], gt_batches[i]))
             
         if viz:
-            callback(chunk_index, model, gt_batches, preds, results, aligner)
+            callback(seq_index, model, gt_batches, preds, results, aligner)
         del aligner, uvt_online, preds, gt_batches, results
         if has_gps:
             del aligner_gps
@@ -320,8 +304,8 @@ def evaluate(
 
     seed_everything(dataset.cfg.seed)
     if sequential:
-        dset, chunk2idx = dataset.sequence_dataset(split, **cfg.chunking)
-        metrics = evaluate_sequential(dset, chunk2idx, model, **kwargs)
+        dset, seq2idx = dataset.sequence_dataset(split)
+        metrics = evaluate_sequential(dset, seq2idx, model, **kwargs)
     else:
         # Note: num_workers > 0 might cause issues if the dataset is not thread-safe.
         # For our new panorama logic, we use a dataloader just to access the dataset.
