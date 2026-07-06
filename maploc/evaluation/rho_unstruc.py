@@ -40,7 +40,7 @@ default_cfg_sequential = OmegaConf.create(
     {
         **default_cfg_single,
         "chunking": {
-            "max_length": 30,
+            "max_length": 90,
         },
     }
 )
@@ -66,15 +66,12 @@ def run(
 
     keys = [
         "xy_max_error",
-        "xy_gps_error",
         "yaw_max_error",
     ]
     if sequential:
         keys += [
             "xy_seq_error",
-            "xy_gps_seq_error",
             "yaw_seq_error",
-            "yaw_gps_seq_error",
         ]
     for k in keys:
         if k not in metrics:
@@ -90,16 +87,19 @@ if __name__ == "__main__":
     parser.add_argument("--experiment", type=str, required=True)
     parser.add_argument("--split", type=str, default="val", choices=["val"])
     parser.add_argument("--sequential", action="store_true")
+    parser.add_argument("--seq_mode", type=str, default="online", choices=["online", "offline"])
     parser.add_argument("--output_dir", type=Path)
     parser.add_argument("--num", type=int)
     parser.add_argument("dotlist", nargs="*")
     args = parser.parse_args()
     cfg = OmegaConf.from_cli(args.dotlist)
+    kwargs = dict(output_dir=args.output_dir, num=args.num)
+    if args.sequential:
+        kwargs["seq_mode"] = args.seq_mode
     run(
         args.split,
         args.experiment,
         cfg,
         args.sequential,
-        output_dir=args.output_dir,
-        num=args.num,
+        **kwargs,
     )

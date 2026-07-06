@@ -133,7 +133,15 @@ def evaluate_sequential(
     num_rotations: int = 512,
     mask_index: Optional[Tuple[int]] = None,
     has_gps: bool = False,
+    seq_mode: str = "online",
 ):
+    """seq_mode selects how the sequence estimates (uv_seq/yaw_seq) are computed:
+    - "online": causal recursive filtering; each frame's estimate only uses
+      past observations (argmax of the belief after each update_with_ref).
+    - "offline": rigid alignment of the full sequence, then all frames are
+      re-localized with the aligned transform (non-causal).
+    """
+    assert seq_mode in ("online", "offline"), seq_mode
     num_views = 3
     chunk_keys = list(chunk2idx)
     if shuffle:
@@ -175,12 +183,18 @@ def evaluate_sequential(
         if num_panoramas_in_chunk == 0:
             continue
 
-        aligner = RigidAligner(track_priors=viz, num_rotations=num_rotations)
+        if seq_mode == "online":
+            # The belief follows the current frame; each frame's estimate is
+            # causal (argmax of the belief right after fusing the observation).
+            aligner = RigidAligner()
+        else:
+            aligner = RigidAligner(track_priors=viz, num_rotations=num_rotations)
         if has_gps:
             aligner_gps = GPSAligner(track_priors=viz, num_rotations=num_rotations)
 
         gt_batches = []
         preds = []
+        uvt_online = []
 
         for i in range(num_panoramas_in_chunk):
             start_idx = i * num_views
@@ -204,7 +218,11 @@ def evaluate_sequential(
             canvas = gt_data["canvas"]
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
             gt_data["yaw"] = yaw = gt_data["roll_pitch_yaw"][-1].double()
-            aligner.update(pred["log_probs"][0], canvas, xy, yaw)
+            if seq_mode == "online":
+                aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw)
+                uvt_online.append(argmax_xyr(aligner.belief))
+            else:
+                aligner.update(pred["log_probs"][0], canvas, xy, yaw)
 
             if has_gps:
                 (uv_gps,) = pred["uv_gps"] = gt_data["uv_gps"][None]
@@ -223,16 +241,21 @@ def evaluate_sequential(
 
         xy_gt = torch.stack([b["xy_geo"] for b in gt_batches])
         yaw_gt = torch.stack([b["yaw"] for b in gt_batches])
-        aligner.compute()
-        xy_seq, yaw_seq = aligner.transform(xy_gt, yaw_gt)
+        if seq_mode == "offline":
+            aligner.compute()
+            xy_seq, yaw_seq = aligner.transform(xy_gt, yaw_gt)
         if has_gps:
             aligner_gps.compute()
             xy_gps_seq, yaw_gps_seq = aligner_gps.transform(xy_gt, yaw_gt)
             
         results = []
         for i in range(num_panoramas_in_chunk):
-            preds[i]["uv_seq"] = gt_batches[i]["canvas"].to_uv(xy_seq[i]).float()
-            preds[i]["yaw_seq"] = yaw_seq[i].float()
+            if seq_mode == "online":
+                preds[i]["uv_seq"] = uvt_online[i][:2].float()
+                preds[i]["yaw_seq"] = uvt_online[i][-1].float()
+            else:
+                preds[i]["uv_seq"] = gt_batches[i]["canvas"].to_uv(xy_seq[i]).float()
+                preds[i]["yaw_seq"] = yaw_seq[i].float()
             if has_gps:
                 preds[i]["uv_gps_seq"] = (
                     gt_batches[i]["canvas"].to_uv(xy_gps_seq[i]).float()
@@ -248,7 +271,7 @@ def evaluate_sequential(
             
         if viz:
             callback(chunk_index, model, gt_batches, preds, results, aligner)
-        del aligner, preds, gt_batches, results
+        del aligner, uvt_online, preds, gt_batches, results
         if has_gps:
             del aligner_gps
 

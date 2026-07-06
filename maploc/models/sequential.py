@@ -156,7 +156,7 @@ class RigidAligner:
                 num_rotations=observation.shape[-1],
             )
 
-        self.belief = observation
+        self.belief = log_softmax_spatial(observation)
         self.canvas = canvas
         self.xy_ref = xy
         self.yaw_ref = yaw
