@@ -82,7 +82,9 @@ class RigidAligner:
         self.yaw_ref = None
         self.belief = None
 
-    def update_with_ref(self, observation, canvas, xy, yaw, uniform_eps=0.01, obs_weight_gamma=1.0):
+    def update_with_ref(self, observation, canvas, xy, yaw, recovery_prior, recovery_eps=0.01, obs_weight_gamma=1.0):
+        """recovery_prior: (h, w) log-prior (e.g. the OSM road prior) shaping
+        where the ε recovery mass goes."""
         if obs_weight_gamma > 0:
             # Entropy-based confidence: ambiguous observations vote less.
             w = observation_weight(observation, obs_weight_gamma)
@@ -102,10 +104,20 @@ class RigidAligner:
             )
 
         belief = log_softmax_spatial(observation)
-        if uniform_eps > 0:
+        if recovery_eps > 0:
+            # Recovery mass shaped by the semantic prior: normalized over
+            # space, uniform over rotations, blended with 10% uniform so
+            # that every pose stays recoverable.
+            prior = recovery_prior.to(belief)
+            prior = prior - torch.logsumexp(prior.flatten(), 0)
+            prior = prior[..., None] - np.log(belief.shape[-1])
+            recovery = torch.logaddexp(
+                prior + np.log(0.9),
+                prior.new_full((), np.log(0.1) - np.log(belief.numel())),
+            )
             belief = torch.logaddexp(
-                belief + np.log1p(-uniform_eps),
-                belief.new_full((), np.log(uniform_eps) - np.log(belief.numel())),
+                belief + np.log1p(-recovery_eps),
+                np.log(recovery_eps) + recovery,
             )
         self.belief = belief
         self.canvas = canvas

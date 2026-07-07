@@ -78,6 +78,12 @@ def evaluate_single_image(
         # Manually create a batch of num_views for one panorama
         # batch_list = [dataset[start_idx], dataset[start_idx+1], dataset[start_idx+2], dataset[start_idx+3]]
         batch_list = [dataset[start_idx], dataset[start_idx+1], dataset[start_idx+2]]
+        # The model treats any batch of 3 as a panorama; guard against
+        # silently pairing views of different panoramas (or out of order).
+        names = [item["name"] for item in batch_list]
+        assert len({n.rsplit("_", 1)[0] for n in names}) == 1 and [
+            n.rsplit("_", 1)[1] for n in names
+        ] == ["view1", "view2", "view3"], f"Not a valid panorama triple: {names}"
         batch_ = collate(batch_list)
         batch = model.transfer_batch_to_device(batch_, model.device, i)
 
@@ -115,7 +121,7 @@ def evaluate_sequential(
     callback: Optional[Callable] = None,
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
-    uniform_eps: float = 0.01,
+    recovery_eps: float = 0.01,
     obs_weight_gamma: float = 1.0,
 ):
     num_views = 3
@@ -163,6 +169,12 @@ def evaluate_sequential(
             start_idx = i * num_views
             # Manually create a batch of num_views for one panorama
             batch_list = [dataset[indices[start_idx + v]] for v in range(num_views)]
+            # The model treats any batch of 3 as a panorama; guard against
+            # silently pairing views of different panoramas (or out of order).
+            names = [item["name"] for item in batch_list]
+            assert len({n.rsplit("_", 1)[0] for n in names}) == 1 and [
+                n.rsplit("_", 1)[1] for n in names
+            ] == ["view1", "view2", "view3"], f"Not a valid panorama triple: {names}"
             batch_ = collate(batch_list)
 
             # Ground truth and canvas are taken from the main view (view 1)
@@ -181,7 +193,7 @@ def evaluate_sequential(
             canvas = gt_data["canvas"]
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
             gt_data["yaw"] = yaw = gt_data["roll_pitch_yaw"][-1].double()
-            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw, uniform_eps=uniform_eps, obs_weight_gamma=obs_weight_gamma)
+            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw, recovery_eps=recovery_eps, obs_weight_gamma=obs_weight_gamma, recovery_prior=gt_data["road_prior"])
             uvt_online.append(argmax_xyr(aligner.belief))
 
             if not viz:
