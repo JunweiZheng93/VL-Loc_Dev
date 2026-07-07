@@ -116,6 +116,7 @@ def evaluate_sequential(
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
     uniform_eps: float = 0.01,
+    obs_weight_gamma: float = 1.0,
 ):
     num_views = 3
     seq_keys = list(seq2idx)
@@ -180,7 +181,7 @@ def evaluate_sequential(
             canvas = gt_data["canvas"]
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
             gt_data["yaw"] = yaw = gt_data["roll_pitch_yaw"][-1].double()
-            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw, uniform_eps=uniform_eps)
+            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw, uniform_eps=uniform_eps, obs_weight_gamma=obs_weight_gamma)
             uvt_online.append(argmax_xyr(aligner.belief))
 
             if not viz:

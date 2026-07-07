@@ -80,6 +80,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="val", choices=["val"])
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--uniform_eps", type=float, default=0.01)
+    parser.add_argument("--obs_weight_gamma", type=float, default=1.0, help="exponent of the entropy-based observation weight; 0 disables")
     parser.add_argument("--output_dir", type=Path)
     parser.add_argument("--num", type=int)
     parser.add_argument("dotlist", nargs="*")
@@ -88,6 +89,7 @@ if __name__ == "__main__":
     kwargs = dict(output_dir=args.output_dir, num=args.num)
     if args.sequential:
         kwargs["uniform_eps"] = args.uniform_eps
+        kwargs["obs_weight_gamma"] = args.obs_weight_gamma
     run(
         args.split,
         args.experiment,

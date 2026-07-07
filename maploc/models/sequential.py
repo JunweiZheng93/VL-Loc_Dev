@@ -36,6 +36,20 @@ def propagate_belief(
     return prior, valid
 
 
+def observation_weight(log_probs, gamma=1.0):
+    """Confidence of an observation in [0, 1] from its normalized entropy.
+
+    A peaked observation (low entropy) gets w close to 1, an ambiguous one
+    (entropy close to the uniform maximum) gets w close to 0. Scaling the
+    observation log-likelihood by w tempers it, so poor observations vote
+    less during the fusion.
+    """
+    probs = log_probs.exp()
+    entropy = -torch.xlogy(probs, probs).sum()
+    certainty = 1 - entropy / np.log(log_probs.numel())
+    return certainty.clamp(min=1e-3, max=1.0) ** gamma
+
+
 def integrate_observation(
     source,
     target,
@@ -68,7 +82,11 @@ class RigidAligner:
         self.yaw_ref = None
         self.belief = None
 
-    def update_with_ref(self, observation, canvas, xy, yaw, uniform_eps=0.01):
+    def update_with_ref(self, observation, canvas, xy, yaw, uniform_eps=0.01, obs_weight_gamma=1.0):
+        if obs_weight_gamma > 0:
+            # Entropy-based confidence: ambiguous observations vote less.
+            w = observation_weight(observation, obs_weight_gamma)
+            observation = observation * w
         if self.belief is not None:
             observation = observation.clone()
             integrate_observation(
