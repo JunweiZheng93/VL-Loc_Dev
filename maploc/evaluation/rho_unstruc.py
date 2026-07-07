@@ -24,7 +24,6 @@ data_cfg_train = OmegaConf.load(Path(conf_data_dir.__file__).parent / "rho_unstr
 data_cfg = OmegaConf.merge(
     data_cfg_train,
     {
-        "return_gps": True,
         "add_map_mask": True,
         "max_init_error": 32,
         "loading": {"val": {"batch_size": 3, "num_workers": 3}},
@@ -80,16 +79,19 @@ if __name__ == "__main__":
     parser.add_argument("--experiment", type=str, required=True)
     parser.add_argument("--split", type=str, default="val", choices=["val"])
     parser.add_argument("--sequential", action="store_true")
+    parser.add_argument("--uniform_eps", type=float, default=0.01)
     parser.add_argument("--output_dir", type=Path)
     parser.add_argument("--num", type=int)
     parser.add_argument("dotlist", nargs="*")
     args = parser.parse_args()
     cfg = OmegaConf.from_cli(args.dotlist)
+    kwargs = dict(output_dir=args.output_dir, num=args.num)
+    if args.sequential:
+        kwargs["uniform_eps"] = args.uniform_eps
     run(
         args.split,
         args.experiment,
         cfg,
         args.sequential,
-        output_dir=args.output_dir,
-        num=args.num,
+        **kwargs,
     )

@@ -15,8 +15,8 @@ from tqdm import tqdm
 from .. import EXPERIMENTS_PATH, logger
 from ..data.torch import collate, unbatch_to_device
 from ..models.metrics_v1gt import AngleError, LateralLongitudinalError, Location2DError
-from ..models.sequential import GPSAligner, RigidAligner
-from ..models.voting import argmax_xyr, fuse_gps
+from ..models.sequential import RigidAligner
+from ..models.voting import argmax_xyr
 from ..module import GenericModule
 from ..utils.io import DATA_URL, download_file
 from .utils import write_dump
@@ -56,7 +56,6 @@ def evaluate_single_image(
     callback: Optional[Callable] = None,
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
-    has_gps: bool = False,
 ):
     """
     Evaluates a model on a dataset by processing images as panoramas (groups of 3).
@@ -67,10 +66,6 @@ def evaluate_single_image(
     ppm = model.model.conf.pixel_per_meter
     metrics = MetricCollection(model.model.metrics())
     metrics["directional_error"] = LateralLongitudinalError(ppm)
-    if has_gps:
-        metrics["xy_gps_error"] = Location2DError("uv_gps", ppm)
-        metrics["xy_fused_error"] = Location2DError("uv_fused", ppm)
-        metrics["yaw_fused_error"] = AngleError("yaw_fused")
     metrics = metrics.to(model.device)
 
     dataset = dataloader.dataset
@@ -97,17 +92,6 @@ def evaluate_single_image(
         
         # In panorama mode, ground truth corresponds to the first view
         gt_data = batch_list[0]
-        
-
-        if has_gps:
-            (uv_gps,) = pred["uv_gps"] = gt_data["uv_gps"][None] # Add batch dim
-            pred["log_probs_fused"] = fuse_gps(
-                pred["log_probs"], uv_gps, ppm, sigma=gt_data["accuracy_gps"]
-            )
-            uvt_fused = argmax_xyr(pred["log_probs_fused"])
-            pred["uv_fused"] = uvt_fused[..., :2]
-            pred["yaw_fused"] = uvt_fused[..., -1]
-            del uv_gps, uvt_fused
 
         # The metrics have been updated to handle panorama logic via 'is_panorama' flag
         results = metrics(pred, batch) 
@@ -130,17 +114,9 @@ def evaluate_sequential(
     shuffle: bool = False,
     callback: Optional[Callable] = None,
     progress: bool = True,
-    num_rotations: int = 512,
     mask_index: Optional[Tuple[int]] = None,
-    has_gps: bool = False,
+    uniform_eps: float = 0.01,
 ):
-    """Online (causal) sequential evaluation of each trajectory.
-
-    Each key of seq2idx is one real trajectory (never mixed or chunked).
-    Each frame's estimate (uv_seq/yaw_seq) is the argmax of the recursive
-    belief right after fusing that frame's observation, i.e. it only uses
-    past observations.
-    """
     num_views = 3
     seq_keys = list(seq2idx)
     if shuffle:
@@ -163,15 +139,9 @@ def evaluate_sequential(
     metrics["xy_seq_error"] = Location2DError("uv_seq", ppm)
     metrics["yaw_seq_error"] = AngleError("yaw_seq")
     metrics["directional_seq_error"] = LateralLongitudinalError(ppm, key="uv_seq")
-    if has_gps:
-        metrics["xy_gps_error"] = Location2DError("uv_gps", ppm)
-        metrics["xy_gps_seq_error"] = Location2DError("uv_gps_seq", ppm)
-        metrics["yaw_gps_seq_error"] = AngleError("yaw_gps_seq")
     metrics = metrics.to(model.device)
 
     keys_save = ["uvr_max", "uv_max", "yaw_max", "uv_expectation"]
-    if has_gps:
-        keys_save.append("uv_gps")
     if viz:
         keys_save.append("log_probs")
 
@@ -183,8 +153,6 @@ def evaluate_sequential(
             continue
 
         aligner = RigidAligner()
-        if has_gps:
-            aligner_gps = GPSAligner(track_priors=viz, num_rotations=num_rotations)
 
         gt_batches = []
         preds = []
@@ -212,13 +180,8 @@ def evaluate_sequential(
             canvas = gt_data["canvas"]
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
             gt_data["yaw"] = yaw = gt_data["roll_pitch_yaw"][-1].double()
-            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw)
+            aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw, uniform_eps=uniform_eps)
             uvt_online.append(argmax_xyr(aligner.belief))
-
-            if has_gps:
-                (uv_gps,) = pred["uv_gps"] = gt_data["uv_gps"][None]
-                xy_gps = canvas.to_xy(uv_gps.double())
-                aligner_gps.update(xy_gps, gt_data["accuracy_gps"], canvas, xy, yaw)
 
             if not viz:
                 # To save memory, we can pop large tensors if not visualizing
@@ -230,22 +193,11 @@ def evaluate_sequential(
             preds.append({k: pred[k][0] for k in keys_save})
             del pred, batch, batch_
 
-        if has_gps:
-            xy_gt = torch.stack([b["xy_geo"] for b in gt_batches])
-            yaw_gt = torch.stack([b["yaw"] for b in gt_batches])
-            aligner_gps.compute()
-            xy_gps_seq, yaw_gps_seq = aligner_gps.transform(xy_gt, yaw_gt)
-            
         results = []
         for i in range(num_panoramas):
             preds[i]["uv_seq"] = uvt_online[i][:2].float()
             preds[i]["yaw_seq"] = uvt_online[i][-1].float()
-            if has_gps:
-                preds[i]["uv_gps_seq"] = (
-                    gt_batches[i]["canvas"].to_uv(xy_gps_seq[i]).float()
-                )
-                preds[i]["yaw_gps_seq"] = yaw_gps_seq[i].float()
-            
+
             # For metrics, we need to pass the full batch (for all 3 views)
             # but our metrics are already adapted to handle this via 'is_panorama'
             # and will internally select the correct GT.
@@ -256,8 +208,6 @@ def evaluate_sequential(
         if viz:
             callback(seq_index, model, gt_batches, preds, results, aligner)
         del aligner, uvt_online, preds, gt_batches, results
-        if has_gps:
-            del aligner_gps
 
     return metrics.cpu()
 
