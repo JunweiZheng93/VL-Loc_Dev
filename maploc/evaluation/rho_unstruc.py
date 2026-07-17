@@ -81,6 +81,7 @@ if __name__ == "__main__":
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--recovery_eps", type=float, default=0.01)
     parser.add_argument("--obs_weight_gamma", type=float, default=1.0, help="exponent of the entropy-based observation weight; 0 disables")
+    parser.add_argument("--readout_radius", type=int, default=3, help="half-size of the local-expectation window for the sub-bin xy readout; 0 falls back to pure argmax")
     parser.add_argument("--output_dir", type=Path)
     parser.add_argument("--num", type=int)
     parser.add_argument("dotlist", nargs="*")
@@ -90,6 +91,7 @@ if __name__ == "__main__":
     if args.sequential:
         kwargs["recovery_eps"] = args.recovery_eps
         kwargs["obs_weight_gamma"] = args.obs_weight_gamma
+        kwargs["readout_radius"] = args.readout_radius
     run(
         args.split,
         args.experiment,

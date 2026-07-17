@@ -15,8 +15,7 @@ from tqdm import tqdm
 from .. import EXPERIMENTS_PATH, logger
 from ..data.torch import collate, unbatch_to_device
 from ..models.metrics_v1gt import AngleError, LateralLongitudinalError, Location2DError
-from ..models.sequential import RigidAligner
-from ..models.voting import argmax_xyr
+from ..models.sequential import RigidAligner, local_expectation_xyr
 from ..module import GenericModule
 from ..utils.io import DATA_URL, download_file
 from .utils import write_dump
@@ -123,6 +122,7 @@ def evaluate_sequential(
     mask_index: Optional[Tuple[int]] = None,
     recovery_eps: float = 0.01,
     obs_weight_gamma: float = 1.0,
+    readout_radius: int = 3,
 ):
     num_views = 3
     seq_keys = list(seq2idx)
@@ -194,7 +194,7 @@ def evaluate_sequential(
             gt_data["xy_geo"] = xy = canvas.to_xy(gt_data["uv"].double())
             gt_data["yaw"] = yaw = gt_data["roll_pitch_yaw"][-1].double()
             aligner.update_with_ref(pred["log_probs"][0], canvas, xy, yaw, recovery_eps=recovery_eps, obs_weight_gamma=obs_weight_gamma, recovery_prior=gt_data["road_prior"])
-            uvt_online.append(argmax_xyr(aligner.belief))
+            uvt_online.append(local_expectation_xyr(aligner.belief, readout_radius))
 
             if not viz:
                 # To save memory, we can pop large tensors if not visualizing

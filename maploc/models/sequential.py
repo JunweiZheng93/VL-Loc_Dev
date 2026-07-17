@@ -4,7 +4,31 @@ import numpy as np
 import torch
 
 from .utils import deg2rad, make_grid, rotmat2d
-from .voting import log_softmax_spatial, sample_xyr
+from .voting import argmax_xyr, log_softmax_spatial, sample_xyr
+
+
+def local_expectation_xyr(belief, radius=3):
+    """Sub-bin xy readout: argmax picks the peak, the expectation over a
+    small window around it recovers the sub-cell position. The window
+    excludes the other modes and the recovery floor, so the local mean is
+    taken over a single unimodal bump, where it is the optimal readout.
+    Yaw is left at the argmax bin. radius=0 falls back to pure argmax.
+    """
+    xyr = argmax_xyr(belief).to(belief)
+    if radius > 0:
+        h, w = belief.shape[:2]
+        x, y = int(xyr[0]), int(xyr[1])
+        x0, x1 = max(x - radius, 0), min(x + radius + 1, w)
+        y0, y1 = max(y - radius, 0), min(y + radius + 1, h)
+        patch = belief[y0:y1, x0:x1].logsumexp(-1)  # spatial log-marginal
+        prob = (patch - patch.max()).exp()
+        prob = prob / prob.sum()
+        dx = torch.arange(x0, x1, device=belief.device, dtype=prob.dtype) - xyr[0]
+        dy = torch.arange(y0, y1, device=belief.device, dtype=prob.dtype) - xyr[1]
+        grid = torch.stack(torch.meshgrid(dx, dy, indexing="xy"), -1)
+        xyr = xyr.clone()
+        xyr[:2] += torch.einsum("hw,hwd->d", prob, grid)
+    return xyr
 
 
 def propagate_belief(
