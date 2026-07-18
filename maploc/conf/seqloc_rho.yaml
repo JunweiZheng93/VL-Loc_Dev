@@ -1,8 +1,10 @@
 # RHO 系列 · 单卡 A100 训练顶层配置
 # ---------------------------------------------------------------------------
 # 训练参数与 experiments/RHO_neuanspach 完全一致,仅以下两点按需不同:
-#   1) 单卡:gpus=1 + micro-batch 12 × accumulate 3 = 有效 batch 36
-#      (与原始 4 卡 × 每卡 9 = 36 等价,可装进 40GB A100)
+#   1) 单卡:gpus=1,micro-batch 6 × accumulate 6 = 有效 batch 36
+#      (与原始 4 卡 × 每卡 9 = 36 等价。40GB A100 上 micro-batch 12 会 OOM,
+#       故微批取 6;micro-batch 必须是 3 的倍数:pano 每样本含 3 视图,
+#       forward 靠 batch%3==0 触发全景融合,非 3 倍数会崩/退化成单视图)
 #   2) 从头训练:finetune_from_checkpoint 保持 null(继承 training.yaml 默认)
 # 数据侧:data.name=mapillary_pano 与 road prior 在此固化(场景 yaml 已抽出这些差异)。
 #
@@ -23,11 +25,11 @@ data:
   name: mapillary_pano            # RHO 用 pano datamodule
   add_road_prior: true            # inference 序列聚合的 recovery 先验(fused_prior 训练不消费)
   road_prior_sigma: 10.0
-  loading:                        # 单卡微批(有效 batch 仍为 36)
-    train: {batch_size: 12, num_workers: 12}
-    val: {batch_size: 12, num_workers: 12}
+  loading:                        # 单卡 micro-batch 6(必须为 3 的倍数,pano 硬约束)
+    train: {batch_size: 6, num_workers: 6}
+    val: {batch_size: 6, num_workers: 6}
 
 training:
   trainer:
-    accumulate_grad_batches: 3    # 12 × 3 = 有效 batch 36
-    val_check_interval: 1500      # 原 500 × 3,按优化器步对齐验证/存档/降 LR 节奏
+    accumulate_grad_batches: 6    # 6 × 6 = 有效 batch 36(与参考等价)
+    val_check_interval: 3000      # 6 × 3000 = 18000 样本/次,与参考(36×500)同样本节奏

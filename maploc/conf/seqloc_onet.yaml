@@ -1,8 +1,8 @@
 # Onet 系列 · 单卡 A100 训练顶层配置(原版 OrienterNet,与 RHO 对照)
 # ---------------------------------------------------------------------------
 # 训练参数与 experiments/Onet_neuanspach 一致,仅以下两点按需不同:
-#   1) 单卡:gpus=1,batch 16(onet 的 x_max=19、BEV 小,单卡即可装下;
-#      每步有效 batch 16 与原始 4 卡 × 每卡 4 = 16 相同,无需梯度累积)
+#   1) 单卡:gpus=1,micro-batch 8 × accumulate 2 = 有效 batch 16
+#      (与原始 4 卡 × 每卡 4 = 16 等价;onet 的 x_max=19、BEV 小,微批 8 显存充裕)
 #   2) 从头训练:微调源 experiments/orienternet_mgl.ckpt 已丢失,finetune 保持 null
 # 数据侧:data.name=mapillary(非 pano)在此固化(场景 yaml 已抽出这一差异)。
 #
@@ -22,10 +22,11 @@ experiment:
 
 data:
   name: mapillary         # onet 用非 pano datamodule
-  loading:                # 单卡 batch 16(与原始每步有效 batch 相同)
-    train: {batch_size: 16, num_workers: 16}
-    val: {batch_size: 16, num_workers: 16}
+  loading:                # 单卡 micro-batch 8
+    train: {batch_size: 8, num_workers: 8}
+    val: {batch_size: 8, num_workers: 8}
 
 training:
   trainer:
-    val_check_interval: 500   # 单卡 batch16 的优化器步节奏与原始 4卡×batch16 一致
+    accumulate_grad_batches: 2    # 8 × 2 = 有效 batch 16(与参考等价)
+    val_check_interval: 1000      # 8 × 1000 = 8000 样本/次,与参考(16×500)同样本节奏

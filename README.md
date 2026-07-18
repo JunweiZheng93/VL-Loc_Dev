@@ -33,7 +33,7 @@ handling are all shared with CV-FSS. Run everything from the repo root (hydra
 The `seqloc_rho` top-level config fixes the `fused_prior` model and the
 single-GPU training parameters. It trains from scratch and is otherwise
 equivalent to the reference `RHO_neuanspach` run (same model / lr / schedule /
-augmentation); only single-GPU and from-scratch differ.
+augmentation / effective batch); only single-GPU and from-scratch differ.
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m maploc.train --config-name=seqloc_rho \
@@ -42,7 +42,8 @@ CUDA_VISIBLE_DEVICES=0 python -m maploc.train --config-name=seqloc_rho \
 
 For example `data=seqloc_neuanspach experiment.name=RHO_neuanspach`. Checkpoints go
 to `experiments/RHO_<scene>/` (`best.ckpt` = best val loss). The effective batch
-is 36 (micro-batch 12 × accumulate 3), which fits a 40GB A100. To switch scenes,
+is 36 (micro-batch 6 × accumulate 6; micro-batch 12 OOMs on a 40GB A100, and the
+micro-batch must be a multiple of 3 — one panorama = 3 views). To switch scenes,
 change only `data=seqloc_<scene>` and `experiment.name=RHO_<scene>`. The per-scene
 configs `conf/data/seqloc_<scene>.yaml` are shared by both the RHO and OrienterNet
 lines; the datamodule (`mapillary_pano` vs `mapillary`) and road prior are set by
@@ -74,7 +75,8 @@ trajectories come from the split file.
 
 The OrienterNet baseline mirrors the RHO line and shares the same per-scene
 configs. It uses the original `orienternet` model (`x_max=19`), the non-panorama
-`mapillary` datamodule, and no road prior.
+`mapillary` datamodule, no road prior, and a single-GPU effective batch of 16
+(micro-batch 8 × accumulate 2), matching the reference run.
 
 ```bash
 # train
