@@ -1,0 +1,32 @@
+# CV-RHO 场景数据(RHO 与 Onet 共享):washington
+# 依赖:datasets/CV-RHO/washington/{dump.json,tiles.pkl,images/} + splits_RHO_washington.json
+# 与 CV-FSS 场景 yaml 的唯一差异:data_dir 指向 CV-RHO(其余布局一模一样)。
+# data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
+#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_washington experiment.name=RHO_washington
+#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_washington experiment.name=Onet_washington
+data_dir: datasets/CV-RHO
+scenes:
+  - washington
+split: splits_RHO_washington.json
+loading:
+  train:
+    batch_size: 16
+    num_workers: ${.batch_size}
+  val:
+    batch_size: ${..train.batch_size}
+    num_workers: ${.batch_size}
+num_classes:
+  areas: 7
+  ways: 10
+  nodes: 33
+pixel_per_meter: 2
+crop_size_meters: 64
+max_init_error: 48
+add_map_mask: true
+resize_image: 512
+pad_to_square: true
+rectify_pitch: true
+augmentation:
+  rot90: true
+  flip: true
+  image: {apply: true}

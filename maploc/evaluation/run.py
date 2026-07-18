@@ -15,8 +15,7 @@ from tqdm import tqdm
 from .. import EXPERIMENTS_PATH, logger
 from ..data.torch import collate, unbatch_to_device
 from ..models.metrics import AngleError, LateralLongitudinalError, Location2DError
-from ..models.sequential import GPSAligner, RigidAligner
-from ..models.voting import argmax_xyr, fuse_gps
+from ..models.sequential import RigidAligner, local_expectation_xyr
 from ..module import GenericModule
 from ..utils.io import DATA_URL, download_file
 from .utils import write_dump
@@ -56,15 +55,10 @@ def evaluate_single_image(
     callback: Optional[Callable] = None,
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
-    has_gps: bool = False,
 ):
     ppm = model.model.conf.pixel_per_meter
     metrics = MetricCollection(model.model.metrics())
     metrics["directional_error"] = LateralLongitudinalError(ppm)
-    if has_gps:
-        metrics["xy_gps_error"] = Location2DError("uv_gps", ppm)
-        metrics["xy_fused_error"] = Location2DError("uv_fused", ppm)
-        metrics["yaw_fused_error"] = AngleError("yaw_fused")
     metrics = metrics.to(model.device)
 
     for i, batch_ in enumerate(
@@ -76,16 +70,6 @@ def evaluate_single_image(
             mask = batch["map"][0, mask_index[0]] == (mask_index[1] + 1)
             batch["map"][0, mask_index[0]][mask] = 0
         pred = model(batch)
-
-        if has_gps:
-            (uv_gps,) = pred["uv_gps"] = batch["uv_gps"]
-            pred["log_probs_fused"] = fuse_gps(
-                pred["log_probs"], uv_gps, ppm, sigma=batch["accuracy_gps"]
-            )
-            uvt_fused = argmax_xyr(pred["log_probs_fused"])
-            pred["uv_fused"] = uvt_fused[..., :2]
-            pred["yaw_fused"] = uvt_fused[..., -1]
-            del uv_gps, uvt_fused
 
         results = metrics(pred, batch)
         if callback is not None:
@@ -100,22 +84,23 @@ def evaluate_single_image(
 @torch.no_grad()
 def evaluate_sequential(
     dataset: torch.utils.data.Dataset,
-    chunk2idx: Dict,
+    seq2idx: Dict,
     model: GenericModule,
     num: Optional[int] = None,
     shuffle: bool = False,
     callback: Optional[Callable] = None,
     progress: bool = True,
-    num_rotations: int = 512,
     mask_index: Optional[Tuple[int]] = None,
-    has_gps: bool = False,
+    recovery_eps: float = 0.01,
+    obs_weight_gamma: float = 1.0,
+    readout_radius: int = 3,
 ):
-    chunk_keys = list(chunk2idx)
+    seq_keys = list(seq2idx)
     if shuffle:
-        chunk_keys = [chunk_keys[i] for i in torch.randperm(len(chunk_keys))]
+        seq_keys = [seq_keys[i] for i in torch.randperm(len(seq_keys))]
     if num is not None:
-        chunk_keys = chunk_keys[:num]
-    lengths = [len(chunk2idx[k]) for k in chunk_keys]
+        seq_keys = seq_keys[:num]
+    lengths = [len(seq2idx[k]) for k in seq_keys]
     logger.info(
         "Min/max/med lengths: %d/%d/%d, total number of images: %d",
         min(lengths),
@@ -131,25 +116,18 @@ def evaluate_sequential(
     metrics["xy_seq_error"] = Location2DError("uv_seq", ppm)
     metrics["yaw_seq_error"] = AngleError("yaw_seq")
     metrics["directional_seq_error"] = LateralLongitudinalError(ppm, key="uv_seq")
-    if has_gps:
-        metrics["xy_gps_error"] = Location2DError("uv_gps", ppm)
-        metrics["xy_gps_seq_error"] = Location2DError("uv_gps_seq", ppm)
-        metrics["yaw_gps_seq_error"] = AngleError("yaw_gps_seq")
     metrics = metrics.to(model.device)
 
     keys_save = ["uvr_max", "uv_max", "yaw_max", "uv_expectation"]
-    if has_gps:
-        keys_save.append("uv_gps")
     if viz:
         keys_save.append("log_probs")
 
-    for chunk_index, key in enumerate(tqdm(chunk_keys, disable=not progress)):
-        indices = chunk2idx[key]
-        aligner = RigidAligner(track_priors=viz, num_rotations=num_rotations)
-        if has_gps:
-            aligner_gps = GPSAligner(track_priors=viz, num_rotations=num_rotations)
+    for seq_index, key in enumerate(tqdm(seq_keys, disable=not progress)):
+        indices = seq2idx[key]
+        aligner = RigidAligner()
         batches = []
         preds = []
+        uvt_online = []
         for i in indices:
             data = dataset[i]
             data = model.transfer_batch_to_device(data, model.device, 0)
@@ -158,12 +136,16 @@ def evaluate_sequential(
             canvas = data["canvas"]
             data["xy_geo"] = xy = canvas.to_xy(data["uv"].double())
             data["yaw"] = yaw = data["roll_pitch_yaw"][-1].double()
-            aligner.update(pred["log_probs"][0], canvas, xy, yaw)
-
-            if has_gps:
-                (uv_gps) = pred["uv_gps"] = data["uv_gps"][None]
-                xy_gps = canvas.to_xy(uv_gps.double())
-                aligner_gps.update(xy_gps, data["accuracy_gps"], canvas, xy, yaw)
+            aligner.update_with_ref(
+                pred["log_probs"][0],
+                canvas,
+                xy,
+                yaw,
+                recovery_eps=recovery_eps,
+                obs_weight_gamma=obs_weight_gamma,
+                recovery_prior=data["road_prior"],
+            )
+            uvt_online.append(local_expectation_xyr(aligner.belief, readout_radius))
 
             if not viz:
                 data.pop("image")
@@ -172,26 +154,14 @@ def evaluate_sequential(
             preds.append({k: pred[k][0] for k in keys_save})
             del pred
 
-        xy_gt = torch.stack([b["xy_geo"] for b in batches])
-        yaw_gt = torch.stack([b["yaw"] for b in batches])
-        aligner.compute()
-        xy_seq, yaw_seq = aligner.transform(xy_gt, yaw_gt)
-        if has_gps:
-            aligner_gps.compute()
-            xy_gps_seq, yaw_gps_seq = aligner_gps.transform(xy_gt, yaw_gt)
         results = []
         for i in range(len(indices)):
-            preds[i]["uv_seq"] = batches[i]["canvas"].to_uv(xy_seq[i]).float()
-            preds[i]["yaw_seq"] = yaw_seq[i].float()
-            if has_gps:
-                preds[i]["uv_gps_seq"] = (
-                    batches[i]["canvas"].to_uv(xy_gps_seq[i]).float()
-                )
-                preds[i]["yaw_gps_seq"] = yaw_gps_seq[i].float()
+            preds[i]["uv_seq"] = uvt_online[i][:2].float()
+            preds[i]["yaw_seq"] = uvt_online[i][-1].float()
             results.append(metrics(preds[i], batches[i]))
         if viz:
-            callback(chunk_index, model, batches, preds, results, aligner)
-        del aligner, preds, batches, results
+            callback(seq_index, model, batches, preds, results, aligner)
+        del aligner, uvt_online, preds, batches, results
     return metrics.cpu()
 
 
@@ -237,8 +207,8 @@ def evaluate(
 
     seed_everything(dataset.cfg.seed)
     if sequential:
-        dset, chunk2idx = dataset.sequence_dataset(split, **cfg.chunking)
-        metrics = evaluate_sequential(dset, chunk2idx, model, **kwargs)
+        dset, seq2idx = dataset.sequence_dataset(split)
+        metrics = evaluate_sequential(dset, seq2idx, model, **kwargs)
     else:
         loader = dataset.dataloader(split, shuffle=True, num_workers=num_workers)
         metrics = evaluate_single_image(loader, model, **kwargs)

@@ -36,6 +36,9 @@ class MapLocDataset(torchdata.Dataset):
         "init_from_gps": False,
         "return_gps": False,
         "force_camera_height": None,
+        # eval-only: keep a single view stream per panorama (e.g. "view1");
+        # None = keep all views. Filters splits before packing; training keeps None.
+        "keep_view": None,
         # pose priors
         "add_map_mask": False,
         # road constraint prior

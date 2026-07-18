@@ -11,6 +11,7 @@ omegaconf
 hydra-core
 pytorch-lightning
 torchmetrics
+tensorboard
 jupyter
 lxml
 rtree

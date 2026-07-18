@@ -11,31 +11,39 @@ from ..conf import data as conf_data_dir
 from ..data import MapillaryPanoDataModule
 from .run_pano import evaluate
 
-split_overrides = {
-    "val": {
-        "scenes":[
-            "neuanspach",
-            # "tirol",
-        ]
-    
-    },
+# 可评估的场景;每个对应 conf/data/seqloc_<scene>.yaml 与 splits_RHO_<scene>.json。
+# CV-FSS(datasets/CV-FSS/)+ CV-RHO(datasets/CV-RHO/,场景 yaml 内 data_dir 指向 CV-RHO)。
+SCENES = [
+    "neuanspach", "tirol", "bad_herrenalb", "speicher", "overgaard",                        # CV-FSS
+    "chicago", "detroit", "sanfrancisco", "washington", "montrouge", "toulouse", "berlin",  # CV-RHO
+]
+
+# 评估固定用 fused_prior:road prior 只在序列聚合层生效,单帧 forward 不叠加,
+# 与训练 forward 一致、归因干净。(真要临时换模型,命令行加 dotlist model.name=xxx 即可覆盖。)
+MODEL_NAME = "orienternet_fused_prior"
+
+CONF_DATA_DIR = Path(conf_data_dir.__file__).parent
+
+# 评估期对共享场景 data 配置(conf/data/seqloc_<scene>.yaml)的固定覆盖:
+# 场景 yaml 只含共享部分,这里补 RHO 专属的 datamodule 名与 road prior,
+# 再叠加评估用的小初始误差与 val 小 batch。
+EVAL_DATA_OVERRIDE = {
+    "name": "mapillary_pano",
+    "add_road_prior": True,
+    "road_prior_sigma": 10.0,
+    "add_map_mask": True,
+    "max_init_error": 32,
+    "loading": {"val": {"batch_size": 3, "num_workers": 3}},
 }
-data_cfg_train = OmegaConf.load(Path(conf_data_dir.__file__).parent / "rho_unstruc.yaml")
-data_cfg = OmegaConf.merge(
-    data_cfg_train,
-    {
-        "add_map_mask": True,
-        "max_init_error": 32,
-        "loading": {"val": {"batch_size": 3, "num_workers": 3}},
-    },
-)
-model_cfg = OmegaConf.create(
-    {
-        "name": "orienternet_masking",
-    }
-)
-default_cfg_single = OmegaConf.create({"data": data_cfg, "model": model_cfg})
-default_cfg_sequential = default_cfg_single
+
+
+def build_cfg(scene: str) -> DictConfig:
+    """基于共享场景 data 配置(conf/data/seqloc_<scene>.yaml)构建评估配置。场景 yaml 只含
+    共享部分,EVAL_DATA_OVERRIDE 补 RHO 专属的 datamodule 名与 road prior 及评估期
+    小 batch/初始误差。模型固定 fused_prior。"""
+    data_cfg = OmegaConf.load(CONF_DATA_DIR / f"seqloc_{scene}.yaml")
+    data_cfg = OmegaConf.merge(data_cfg, EVAL_DATA_OVERRIDE)
+    return OmegaConf.create({"data": data_cfg, "model": {"name": MODEL_NAME}})
 
 
 def run(
@@ -44,14 +52,14 @@ def run(
     cfg: Optional[DictConfig] = None,
     sequential: bool = False,
     thresholds: Tuple[int] = (1, 3, 5),
+    scene: str = "neuanspach",
     **kwargs,
 ):
     cfg = cfg or {}
     if isinstance(cfg, dict):
         cfg = OmegaConf.create(cfg)
-    default = default_cfg_sequential if sequential else default_cfg_single
-    default = OmegaConf.merge(default, dict(data=split_overrides[split]))
-    cfg = OmegaConf.merge(default, cfg)
+    default = build_cfg(scene)
+    cfg = OmegaConf.merge(default, cfg)  # 命令行 dotlist 可在此基础上再覆盖
     dataset = MapillaryPanoDataModule(cfg.get("data", {}))
 
     metrics = evaluate(experiment, cfg, dataset, split, sequential=sequential, **kwargs)
@@ -77,6 +85,10 @@ def run(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment", type=str, required=True)
+    parser.add_argument(
+        "--scene", type=str, default="neuanspach", choices=SCENES,
+        help="评估场景;对应 conf/data/seqloc_<scene>.yaml 与 splits_RHO_<scene>.json",
+    )
     parser.add_argument("--split", type=str, default="val", choices=["val"])
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--recovery_eps", type=float, default=0.01)
@@ -97,5 +109,6 @@ if __name__ == "__main__":
         args.experiment,
         cfg,
         args.sequential,
+        scene=args.scene,
         **kwargs,
     )

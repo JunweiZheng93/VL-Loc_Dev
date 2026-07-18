@@ -5374,6 +5374,17 @@ class MapillaryDataModule(pl.LightningDataModule):
         self.parse_splits(self.cfg.split, names)
         if self.cfg.filter_for is not None:
             self.filter_elements()
+        if self.cfg.keep_view is not None:
+            # Eval-only: keep a single view stream per panorama (e.g. "view1") so
+            # single-frame and sequence eval both use one view. Filter splits
+            # before pack_data (like filter_elements) to keep data aligned.
+            for stage in list(self.splits):
+                kept = [n for n in self.splits[stage]
+                        if n[2].endswith(self.cfg.keep_view)]
+                logger.info("%s: keep %d/%d images for view %s.",
+                            stage, len(kept), len(self.splits[stage]),
+                            self.cfg.keep_view)
+                self.splits[stage] = kept
         self.pack_data()
 
     def pack_data(self):
@@ -5544,23 +5555,20 @@ class MapillaryDataModule(pl.LightningDataModule):
         return self.dataloader("test", **kwargs)
 
     def sequence_dataset(self, stage: str, **kwargs):
+        # Group by view stream, order by capture time; NO chunking, mirroring the
+        # RHO pano datamodule (online aggregation needs no offline segmenting).
+        # kwargs are accepted for API compatibility but ignored.
         keys = self.splits[stage]
+        data = self.data[stage]
         seq2indices = defaultdict(list)
         for index, (_, seq, _) in enumerate(keys):
             seq2indices[seq].append(index)
-        # chunk the sequences to the required length
-        chunk2indices = {}
-        for seq, indices in seq2indices.items():
-            chunks = chunk_sequence(self.data[stage], indices, **kwargs)
-            for i, sub_indices in enumerate(chunks):
-                chunk2indices[seq, i] = sub_indices
-        # store the index of each chunk in its sequence
-        chunk_indices = torch.full((len(keys),), -1)
-        for (_, chunk_index), idx in chunk2indices.items():
-            chunk_indices[idx] = chunk_index
-        self.data[stage]["chunk_index"] = chunk_indices
+        seq2indices = {
+            seq: sorted(idx, key=lambda i: data["capture_time"][i].tolist())
+            for seq, idx in seq2indices.items()
+        }
         dataset = self.dataset(stage)
-        return dataset, chunk2indices
+        return dataset, seq2indices
 
     def sequence_dataloader(self, stage: str, shuffle: bool = False, **kwargs):
         dataset, chunk2idx = self.sequence_dataset(stage, **kwargs)

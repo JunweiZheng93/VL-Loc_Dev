@@ -1,0 +1,33 @@
+# RHO 系列 · 单卡 A100 训练顶层配置
+# ---------------------------------------------------------------------------
+# 训练参数与 experiments/RHO_neuanspach 完全一致,仅以下两点按需不同:
+#   1) 单卡:gpus=1 + micro-batch 12 × accumulate 3 = 有效 batch 36
+#      (与原始 4 卡 × 每卡 9 = 36 等价,可装进 40GB A100)
+#   2) 从头训练:finetune_from_checkpoint 保持 null(继承 training.yaml 默认)
+# 数据侧:data.name=mapillary_pano 与 road prior 在此固化(场景 yaml 已抽出这些差异)。
+#
+# 启动:
+#   python -m maploc.train --config-name=seqloc_rho data=seqloc_<场景> experiment.name=RHO_<场景>
+# ---------------------------------------------------------------------------
+defaults:
+  - orienternet_pano      # 继承:model 结构 / image_encoder / training
+  - _self_                # 本文件覆盖上面
+
+model:
+  name: orienternet_fused_prior   # 对齐参考实验(而非 orienternet_pano 默认的 masking)
+
+experiment:
+  gpus: 1                         # 单卡
+
+data:
+  name: mapillary_pano            # RHO 用 pano datamodule
+  add_road_prior: true            # inference 序列聚合的 recovery 先验(fused_prior 训练不消费)
+  road_prior_sigma: 10.0
+  loading:                        # 单卡微批(有效 batch 仍为 36)
+    train: {batch_size: 12, num_workers: 12}
+    val: {batch_size: 12, num_workers: 12}
+
+training:
+  trainer:
+    accumulate_grad_batches: 3    # 12 × 3 = 有效 batch 36
+    val_check_interval: 1500      # 原 500 × 3,按优化器步对齐验证/存档/降 LR 节奏
