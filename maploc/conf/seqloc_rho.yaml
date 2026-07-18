@@ -32,4 +32,4 @@ data:
 training:
   trainer:
     accumulate_grad_batches: 6    # 6 × 6 = 有效 batch 36(与参考等价)
-    val_check_interval: 3000      # 6 × 3000 = 18000 样本/次,与参考(36×500)同样本节奏
+    val_check_interval: 500       # 每 500 micro-batch(6×500=3000 样本)验证一次

@@ -23,10 +23,12 @@ Place each scene under `datasets/CV-FSS/<scene>/` containing `dump.json`,
 
 A second dataset **CV-RHO** (identical layout, cities `chicago`, `detroit`,
 `sanfrancisco`, `washington`, `montrouge`, `toulouse`, `berlin`) lives under
-`datasets/CV-RHO/`. Its per-scene configs `conf/data/seqloc_<city>.yaml` only add
-`data_dir: datasets/CV-RHO`; the training top-levels, eval scripts and `--scene`
-handling are all shared with CV-FSS. Run everything from the repo root (hydra
-`chdir: false`), so the relative `data_dir` resolves.
+`datasets/CV-RHO/`. Every per-scene config `conf/data/seqloc_<scene>.yaml`
+declares its `data_dir` explicitly (`datasets/CV-FSS` or `datasets/CV-RHO`) —
+that value is the only difference between the two datasets' configs; the
+training top-levels, eval scripts and `--scene` handling are all shared. Run
+everything from the repo root (hydra `chdir: false`), so the relative
+`data_dir` resolves.
 
 ## Training (single GPU)
 

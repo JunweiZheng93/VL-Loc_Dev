@@ -3,6 +3,7 @@
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
 #   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_speicher experiment.name=RHO_speicher
 #   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_speicher experiment.name=Onet_speicher
+data_dir: datasets/CV-FSS   # 显式声明(与 datamodule 默认一致;相对 repo 根,hydra chdir:false)
 scenes:
   - speicher
 split: splits_RHO_speicher.json
