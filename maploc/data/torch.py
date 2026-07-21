@@ -179,6 +179,29 @@ def contrastive_collate_fn(batch):
   
   return collated_batch
 
+class GroupedRandomSampler(Sampler[int]):
+    """Non-distributed group-level shuffle: permutes groups (e.g. panoramas
+    of `group_size` consecutive dataset items) each epoch, keeping the
+    in-group order (view1, view2, view3) intact. Single-GPU counterpart of
+    DistributedGroupSampler."""
+
+    def __init__(self, dataset: Sized, group_size: int) -> None:
+        if len(dataset) % group_size != 0:
+            raise ValueError(
+                f"Dataset size {len(dataset)} is not divisible by "
+                f"group_size {group_size}."
+            )
+        self.num_groups = len(dataset) // group_size
+        self.group_size = group_size
+
+    def __len__(self) -> int:
+        return self.num_groups * self.group_size
+
+    def __iter__(self) -> Iterator[int]:
+        for g in torch.randperm(self.num_groups).tolist():
+            yield from range(g * self.group_size, (g + 1) * self.group_size)
+
+
 class DistributedGroupSampler(Sampler[List[int]]):
     """
     Sampler that restricts data loading to a subset of the dataset,

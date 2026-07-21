@@ -19,7 +19,12 @@ from ... import DATASETS_PATH, logger
 from ...osm.tiling import TileManager
 from ..dataset import MapLocDataset
 from ..sequential import chunk_sequence
-from ..torch import collate, worker_init_fn, DistributedGroupSampler
+from ..torch import (
+    collate,
+    worker_init_fn,
+    DistributedGroupSampler,
+    GroupedRandomSampler,
+)
 
 
 def pack_dump_dict(dump):
@@ -1464,8 +1469,13 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
                 shuffle = True,
             )
             shuffle = False # shuffle of Dataloader should be False when sampler is not None
-        else:
-            shuffle = shuffle
+        elif sampler is None and (shuffle or stage == "train"):
+            # Panorama-level shuffle (single-process): permute panoramas,
+            # keep the 3 views of each panorama contiguous and ordered.
+            # A plain view-level shuffle would break the "3 consecutive
+            # samples = one panorama" assumption of the fused forward.
+            sampler = GroupedRandomSampler(dataset, self.num_views)
+            shuffle = False
 
         loader = torchdata.DataLoader(
             dataset,

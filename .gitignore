@@ -2,6 +2,7 @@ datasets/
 viz_kitti/
 experiments/
 outputs/
+docs/
 eval_logs/
 contrastive_logs/
 fine_tune/
