@@ -2,8 +2,8 @@
 # 依赖:datasets/CV-RHO/berlin/{dump.json,tiles.pkl,images/} + splits_RHO_berlin.json
 # 与 CV-FSS 场景 yaml 的唯一差异:data_dir 指向 CV-RHO(其余布局一模一样)。
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
-#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_berlin experiment.name=RHO_berlin
-#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_berlin experiment.name=Onet_berlin
+#   RHO :  python -m maploc.train --config-name=rho  data=berlin experiment.name=RHO_berlin
+#   Onet:  python -m maploc.train --config-name=onet data=berlin experiment.name=Onet_berlin
 data_dir: datasets/CV-RHO
 scenes:
   - berlin

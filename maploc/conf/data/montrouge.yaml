@@ -1,13 +1,13 @@
-# CV-RHO 场景数据(RHO 与 Onet 共享):detroit
-# 依赖:datasets/CV-RHO/detroit/{dump.json,tiles.pkl,images/} + splits_RHO_detroit.json
+# CV-RHO 场景数据(RHO 与 Onet 共享):montrouge
+# 依赖:datasets/CV-RHO/montrouge/{dump.json,tiles.pkl,images/} + splits_RHO_montrouge.json
 # 与 CV-FSS 场景 yaml 的唯一差异:data_dir 指向 CV-RHO(其余布局一模一样)。
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
-#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_detroit experiment.name=RHO_detroit
-#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_detroit experiment.name=Onet_detroit
+#   RHO :  python -m maploc.train --config-name=rho  data=montrouge experiment.name=RHO_montrouge
+#   Onet:  python -m maploc.train --config-name=onet data=montrouge experiment.name=Onet_montrouge
 data_dir: datasets/CV-RHO
 scenes:
-  - detroit
-split: splits_RHO_detroit.json
+  - montrouge
+split: splits_RHO_montrouge.json
 loading:
   train:
     batch_size: 16

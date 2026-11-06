@@ -1,12 +1,12 @@
-# CV-FSS 场景数据(RHO 与 Onet 共享):speicher
-# 依赖:datasets/CV-FSS/speicher/{dump.json,tiles.pkl,images/} + splits_RHO_speicher.json
+# CV-FSS 场景数据(RHO 与 Onet 共享):neuanspach
+# 依赖:datasets/CV-FSS/neuanspach/{dump.json,tiles.pkl,images/} + splits_RHO_neuanspach.json
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
-#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_speicher experiment.name=RHO_speicher
-#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_speicher experiment.name=Onet_speicher
+#   RHO :  python -m maploc.train --config-name=rho  data=neuanspach experiment.name=RHO_neuanspach
+#   Onet:  python -m maploc.train --config-name=onet data=neuanspach experiment.name=Onet_neuanspach
 data_dir: datasets/CV-FSS   # 显式声明(与 datamodule 默认一致;相对 repo 根,hydra chdir:false)
 scenes:
-  - speicher
-split: splits_RHO_speicher.json
+  - neuanspach
+split: splits_RHO_neuanspach.json
 loading:
   train:
     batch_size: 16

@@ -8,40 +8,42 @@ from omegaconf import DictConfig, OmegaConf
 
 from .. import logger
 from ..conf import data as conf_data_dir
-from ..data import MapillaryDataModule
-from .run import evaluate
+from ..data import MapillaryPanoDataModule
+from .run_pano import evaluate
 
-# 可评估的场景;每个对应 conf/data/seqloc_<scene>.yaml 与 splits_RHO_<scene>.json。
+# 可评估的场景;每个对应 conf/data/<scene>.yaml 与 splits_RHO_<scene>.json。
 # CV-FSS(datasets/CV-FSS/)+ CV-RHO(datasets/CV-RHO/,场景 yaml 内 data_dir 指向 CV-RHO)。
 SCENES = [
     "neuanspach", "tirol", "bad_herrenalb", "speicher", "overgaard",                        # CV-FSS
     "chicago", "detroit", "sanfrancisco", "washington", "montrouge", "toulouse", "berlin",  # CV-RHO
 ]
 
+# 评估固定用 fused_prior:road prior 只在序列聚合层生效,单帧 forward 不叠加,
+# 与训练 forward 一致、归因干净。(真要临时换模型,命令行加 dotlist model.name=xxx 即可覆盖。)
+MODEL_NAME = "orienternet_fused_prior"
+
 CONF_DATA_DIR = Path(conf_data_dir.__file__).parent
 
-# 评估期对共享场景 data 配置(conf/data/seqloc_<scene>.yaml)的固定覆盖:场景 yaml 只含
-# 共享部分,这里补 onet 专属的 datamodule 名(mapillary,非 pano)、keep_view=view1(单帧+
-# 序列都只用 view1 这一条 stream,与 RHO 每条轨迹整条对称、只是单视图)、road prior(序列
-# 聚合 ε-recovery 硬依赖 data["road_prior"]),再叠加评估用的小初始误差与 val 小 batch。
+# 评估期对共享场景 data 配置(conf/data/<scene>.yaml)的固定覆盖:
+# 场景 yaml 只含共享部分,这里补 RHO 专属的 datamodule 名与 road prior,
+# 再叠加评估用的小初始误差与 val 小 batch。
 EVAL_DATA_OVERRIDE = {
-    "name": "mapillary",
-    "keep_view": "view1",
+    "name": "mapillary_pano",
     "add_road_prior": True,
     "road_prior_sigma": 10.0,
     "add_map_mask": True,
     "max_init_error": 32,
-    "loading": {"val": {"batch_size": 4, "num_workers": 4}},
+    "loading": {"val": {"batch_size": 3, "num_workers": 3}},
 }
 
+
 def build_cfg(scene: str) -> DictConfig:
-    """基于共享场景 data 配置(conf/data/seqloc_<scene>.yaml)构建评估配置。场景 yaml 只含
-    共享部分,EVAL_DATA_OVERRIDE 补 onet 专属的 datamodule 名(mapillary)、view1 过滤、
-    road prior 及评估期小 batch/初始误差。序列由 datamodule 自排序整条(不 chunk、对齐
-    RHO),故无需 chunking 配置。模型沿用 checkpoint(orienternet 原版),不额外指定。"""
-    data_cfg = OmegaConf.load(CONF_DATA_DIR / f"seqloc_{scene}.yaml")
+    """基于共享场景 data 配置(conf/data/<scene>.yaml)构建评估配置。场景 yaml 只含
+    共享部分,EVAL_DATA_OVERRIDE 补 RHO 专属的 datamodule 名与 road prior 及评估期
+    小 batch/初始误差。模型固定 fused_prior。"""
+    data_cfg = OmegaConf.load(CONF_DATA_DIR / f"{scene}.yaml")
     data_cfg = OmegaConf.merge(data_cfg, EVAL_DATA_OVERRIDE)
-    return OmegaConf.create({"data": data_cfg})
+    return OmegaConf.create({"data": data_cfg, "model": {"name": MODEL_NAME}})
 
 
 def run(
@@ -58,7 +60,7 @@ def run(
         cfg = OmegaConf.create(cfg)
     default = build_cfg(scene)
     cfg = OmegaConf.merge(default, cfg)  # 命令行 dotlist 可在此基础上再覆盖
-    dataset = MapillaryDataModule(cfg.get("data", {}))
+    dataset = MapillaryPanoDataModule(cfg.get("data", {}))
 
     metrics = evaluate(experiment, cfg, dataset, split, sequential=sequential, **kwargs)
 
@@ -85,7 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--experiment", type=str, required=True)
     parser.add_argument(
         "--scene", type=str, default="neuanspach", choices=SCENES,
-        help="评估场景;对应 conf/data/seqloc_<scene>.yaml 与 splits_RHO_<scene>.json",
+        help="评估场景;对应 conf/data/<scene>.yaml 与 splits_RHO_<scene>.json",
     )
     parser.add_argument("--split", type=str, default="val", choices=["val"])
     parser.add_argument("--sequential", action="store_true")

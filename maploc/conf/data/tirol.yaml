@@ -1,12 +1,12 @@
-# CV-FSS 场景数据(RHO 与 Onet 共享):overgaard
-# 依赖:datasets/CV-FSS/overgaard/{dump.json,tiles.pkl,images/} + splits_RHO_overgaard.json
+# CV-FSS 场景数据(RHO 与 Onet 共享):tirol
+# 依赖:datasets/CV-FSS/tirol/{dump.json,tiles.pkl,images/} + splits_RHO_tirol.json
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
-#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_overgaard experiment.name=RHO_overgaard
-#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_overgaard experiment.name=Onet_overgaard
+#   RHO :  python -m maploc.train --config-name=rho  data=tirol experiment.name=RHO_tirol
+#   Onet:  python -m maploc.train --config-name=onet data=tirol experiment.name=Onet_tirol
 data_dir: datasets/CV-FSS   # 显式声明(与 datamodule 默认一致;相对 repo 根,hydra chdir:false)
 scenes:
-  - overgaard
-split: splits_RHO_overgaard.json
+  - tirol
+split: splits_RHO_tirol.json
 loading:
   train:
     batch_size: 16

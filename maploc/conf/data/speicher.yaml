@@ -1,0 +1,31 @@
+# CV-FSS 场景数据(RHO 与 Onet 共享):speicher
+# 依赖:datasets/CV-FSS/speicher/{dump.json,tiles.pkl,images/} + splits_RHO_speicher.json
+# data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
+#   RHO :  python -m maploc.train --config-name=rho  data=speicher experiment.name=RHO_speicher
+#   Onet:  python -m maploc.train --config-name=onet data=speicher experiment.name=Onet_speicher
+data_dir: datasets/CV-FSS   # 显式声明(与 datamodule 默认一致;相对 repo 根,hydra chdir:false)
+scenes:
+  - speicher
+split: splits_RHO_speicher.json
+loading:
+  train:
+    batch_size: 16
+    num_workers: ${.batch_size}
+  val:
+    batch_size: ${..train.batch_size}
+    num_workers: ${.batch_size}
+num_classes:
+  areas: 7
+  ways: 10
+  nodes: 33
+pixel_per_meter: 2
+crop_size_meters: 64
+max_init_error: 48
+add_map_mask: true
+resize_image: 512
+pad_to_square: true
+rectify_pitch: true
+augmentation:
+  rot90: true
+  flip: true
+  image: {apply: true}

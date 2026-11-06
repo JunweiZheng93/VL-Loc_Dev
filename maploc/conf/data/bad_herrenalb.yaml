@@ -1,8 +1,8 @@
 # CV-FSS 场景数据(RHO 与 Onet 共享):bad_herrenalb
 # 依赖:datasets/CV-FSS/bad_herrenalb/{dump.json,tiles.pkl,images/} + splits_RHO_bad_herrenalb.json
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
-#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_bad_herrenalb experiment.name=RHO_bad_herrenalb
-#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_bad_herrenalb experiment.name=Onet_bad_herrenalb
+#   RHO :  python -m maploc.train --config-name=rho  data=bad_herrenalb experiment.name=RHO_bad_herrenalb
+#   Onet:  python -m maploc.train --config-name=onet data=bad_herrenalb experiment.name=Onet_bad_herrenalb
 data_dir: datasets/CV-FSS   # 显式声明(与 datamodule 默认一致;相对 repo 根,hydra chdir:false)
 scenes:
   - bad_herrenalb

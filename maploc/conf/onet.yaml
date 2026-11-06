@@ -7,7 +7,7 @@
 # 数据侧:data.name=mapillary(非 pano)在此固化(场景 yaml 已抽出这一差异)。
 #
 # 启动:
-#   python -m maploc.train --config-name=seqloc_onet data=seqloc_<场景> experiment.name=Onet_<场景>
+#   python -m maploc.train --config-name=onet data=<场景> experiment.name=Onet_<场景>
 # ---------------------------------------------------------------------------
 defaults:
   - orienternet           # 继承:model 结构 / image_encoder / training

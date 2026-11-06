@@ -1,12 +1,13 @@
-# CV-FSS 场景数据(RHO 与 Onet 共享):tirol
-# 依赖:datasets/CV-FSS/tirol/{dump.json,tiles.pkl,images/} + splits_RHO_tirol.json
+# CV-RHO 场景数据(RHO 与 Onet 共享):toulouse
+# 依赖:datasets/CV-RHO/toulouse/{dump.json,tiles.pkl,images/} + splits_RHO_toulouse.json
+# 与 CV-FSS 场景 yaml 的唯一差异:data_dir 指向 CV-RHO(其余布局一模一样)。
 # data.name(mapillary_pano / mapillary)与 road prior 由顶层配置和评估脚本按线路补充:
-#   RHO :  python -m maploc.train --config-name=seqloc_rho  data=seqloc_tirol experiment.name=RHO_tirol
-#   Onet:  python -m maploc.train --config-name=seqloc_onet data=seqloc_tirol experiment.name=Onet_tirol
-data_dir: datasets/CV-FSS   # 显式声明(与 datamodule 默认一致;相对 repo 根,hydra chdir:false)
+#   RHO :  python -m maploc.train --config-name=rho  data=toulouse experiment.name=RHO_toulouse
+#   Onet:  python -m maploc.train --config-name=onet data=toulouse experiment.name=Onet_toulouse
+data_dir: datasets/CV-RHO
 scenes:
-  - tirol
-split: splits_RHO_tirol.json
+  - toulouse
+split: splits_RHO_toulouse.json
 loading:
   train:
     batch_size: 16

@@ -1,8 +1,10 @@
-# RHO — Sequence-Mode Map Localization
+# VL-Loc
 
-OrienterNet-style visual map localization for feature-sparse rural scenes
-(the CV-FSS dataset), with single-frame and sequence (online belief
-aggregation) evaluation. Five scenes: `neuanspach`, `tirol`, `bad_herrenalb`,
+Code base of the VL-Loc project. It currently holds the two baselines the
+project builds on — RHO (OrienterNet-style panorama localization with
+sequence-mode online belief aggregation) and the original OrienterNet — for
+feature-sparse rural scenes (the CV-FSS dataset), with single-frame and
+sequence evaluation. Five scenes: `neuanspach`, `tirol`, `bad_herrenalb`,
 `speicher`, `overgaard`.
 
 ## Setup
@@ -23,7 +25,7 @@ Place each scene under `datasets/CV-FSS/<scene>/` containing `dump.json`,
 
 A second dataset **CV-RHO** (identical layout, cities `chicago`, `detroit`,
 `sanfrancisco`, `washington`, `montrouge`, `toulouse`, `berlin`) lives under
-`datasets/CV-RHO/`. Every per-scene config `conf/data/seqloc_<scene>.yaml`
+`datasets/CV-RHO/`. Every per-scene config `conf/data/<scene>.yaml`
 declares its `data_dir` explicitly (`datasets/CV-FSS` or `datasets/CV-RHO`) —
 that value is the only difference between the two datasets' configs; the
 training top-levels, eval scripts and `--scene` handling are all shared. Run
@@ -32,34 +34,34 @@ everything from the repo root (hydra `chdir: false`), so the relative
 
 ## Training (single GPU)
 
-The `seqloc_rho` top-level config fixes the `fused_prior` model and the
+The `rho` top-level config fixes the `fused_prior` model and the
 single-GPU training parameters. It trains from scratch and is otherwise
 equivalent to the reference `RHO_neuanspach` run (same model / lr / schedule /
 augmentation / effective batch); only single-GPU and from-scratch differ.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python -m maploc.train --config-name=seqloc_rho \
-  data=seqloc_<scene> experiment.name=RHO_<scene>
+CUDA_VISIBLE_DEVICES=0 python -m maploc.train --config-name=rho \
+  data=<scene> experiment.name=RHO_<scene>
 ```
 
-For example `data=seqloc_neuanspach experiment.name=RHO_neuanspach`. Checkpoints go
+For example `data=neuanspach experiment.name=RHO_neuanspach`. Checkpoints go
 to `experiments/RHO_<scene>/` (`best.ckpt` = best val loss). The effective batch
 is 36 (micro-batch 6 × accumulate 6; micro-batch 12 OOMs on a 40GB A100, and the
 micro-batch must be a multiple of 3 — one panorama = 3 views). To switch scenes,
-change only `data=seqloc_<scene>` and `experiment.name=RHO_<scene>`. The per-scene
-configs `conf/data/seqloc_<scene>.yaml` are shared by both the RHO and OrienterNet
+change only `data=<scene>` and `experiment.name=RHO_<scene>`. The per-scene
+configs `conf/data/<scene>.yaml` are shared by both the RHO and OrienterNet
 lines; the datamodule (`mapillary_pano` vs `mapillary`) and road prior are set by
 the top-level config, not the scene file.
 
 ## Sequence evaluation
 
 ```bash
-python -m maploc.evaluation.seqloc_rho \
+python -m maploc.evaluation.eval_rho \
   --experiment RHO_<scene>/best.ckpt --sequential --scene <scene> \
   model.num_rotations=256
 ```
 
-- `--scene` selects the scene (auto-maps to `conf/data/seqloc_<scene>.yaml` and
+- `--scene` selects the scene (auto-maps to `conf/data/<scene>.yaml` and
   `splits_RHO_<scene>.json`) — no need to hand-edit the script or config.
 - The model is fixed to `orienternet_fused_prior`: the road prior applies only
   in the sequence-aggregation layer, not in the single-frame forward. (To try a
@@ -82,9 +84,9 @@ configs. It uses the original `orienternet` model (`x_max=19`), the non-panorama
 
 ```bash
 # train
-python -m maploc.train --config-name=seqloc_onet data=seqloc_<scene> experiment.name=Onet_<scene>
+python -m maploc.train --config-name=onet data=<scene> experiment.name=Onet_<scene>
 # evaluate
-python -m maploc.evaluation.seqloc_onet --experiment Onet_<scene>/best.ckpt \
+python -m maploc.evaluation.eval_onet --experiment Onet_<scene>/best.ckpt \
   --sequential --scene <scene> model.num_rotations=256
 ```
 
