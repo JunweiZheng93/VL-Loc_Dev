@@ -3,7 +3,7 @@
 import functools
 from itertools import islice
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -83,11 +83,11 @@ def evaluate_single_image(
 
 @torch.no_grad()
 def evaluate_sequential(
-    dataset: torch.utils.data.Dataset,
+    loader: torch.utils.data.DataLoader,
+    seq_keys: List,
     seq2idx: Dict,
     model: GenericModule,
     num: Optional[int] = None,
-    shuffle: bool = False,
     callback: Optional[Callable] = None,
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
@@ -95,14 +95,17 @@ def evaluate_sequential(
     obs_weight_gamma: float = 1.0,
     readout_radius: int = 3,
 ):
-    seq_keys = list(seq2idx)
-    if shuffle:
-        seq_keys = [seq_keys[i] for i in torch.randperm(len(seq_keys))]
+    """Sequence evaluation over `datamodule.sequence_dataloader(split)`.
+
+    The loader yields the single samples trajectory by trajectory in the order
+    of `seq_keys`, preprocessed in worker processes; shuffling is decided when
+    the loader is built. `num` limits the number of trajectories.
+    """
     if num is not None:
         seq_keys = seq_keys[:num]
     lengths = [len(seq2idx[k]) for k in seq_keys]
     logger.info(
-        "Min/max/med lengths: %d/%d/%d, total number of images: %d",
+        "Min/med/max lengths: %d/%d/%d, total number of images: %d",
         min(lengths),
         np.median(lengths),
         max(lengths),
@@ -122,14 +125,15 @@ def evaluate_sequential(
     if viz:
         keys_save.append("log_probs")
 
+    samples = iter(loader)
     for seq_index, key in enumerate(tqdm(seq_keys, disable=not progress)):
         indices = seq2idx[key]
         aligner = RigidAligner()
         batches = []
         preds = []
         uvt_online = []
-        for i in indices:
-            data = dataset[i]
+        for _ in indices:
+            data = next(samples)
             data = model.transfer_batch_to_device(data, model.device, 0)
             pred = model(collate([data]))
 
@@ -206,9 +210,15 @@ def evaluate(
     kwargs = {**kwargs, "callback": callback}
 
     seed_everything(dataset.cfg.seed)
+    # 预处理交给 DataLoader worker(worker 内 torch 线程数为 1),但主进程仍有少量 CPU 张量
+    # 运算,而主进程的 intra-op 线程数默认等于机器核数:共享机器上只要有一个核被别的进程占着,
+    # 每个 OpenMP 并行区都会在 barrier 上等调度(实测慢 15 倍以上),故限制线程数。
+    torch.set_num_threads(8)
     if sequential:
-        dset, seq2idx = dataset.sequence_dataset(split)
-        metrics = evaluate_sequential(dset, seq2idx, model, **kwargs)
+        loader, seq_keys, seq2idx = dataset.sequence_dataloader(
+            split, shuffle=kwargs.pop("shuffle", False)
+        )
+        metrics = evaluate_sequential(loader, seq_keys, seq2idx, model, **kwargs)
     else:
         loader = dataset.dataloader(split, shuffle=True, num_workers=num_workers)
         metrics = evaluate_single_image(loader, model, **kwargs)

@@ -37,6 +37,11 @@ def propagate_belief(
     # We allow a different sampling resolution in the target frame
     if num_rotations is None:
         num_rotations = belief.shape[-1]
+    # 网格跟着 Δ_xy 的设备走:xy/yaw 来自 CPU 侧的样本字典,不先搬到 belief 所在设备的话,
+    # 256×256×256×2 的 float64 网格(约 268 MB)会在 CPU 上生成再传 GPU,每步约 230 ms,
+    # 而 GPU 上的采样本身只要几 ms。
+    Δ_xy = Δ_xy.to(belief.device)
+    Δ_yaw = Δ_yaw.to(belief.device)
 
     angles = torch.arange(
         0, 360, 360 / num_rotations, device=Δ_xy.device, dtype=Δ_xy.dtype

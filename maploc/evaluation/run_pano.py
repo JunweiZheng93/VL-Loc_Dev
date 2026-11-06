@@ -3,7 +3,7 @@
 import functools
 from itertools import islice
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -56,10 +56,12 @@ def evaluate_single_image(
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
 ):
-    """
-    Evaluates a model on a dataset by processing images as panoramas (groups of 3).
-    Note: The function now iterates directly over the dataset, not the dataloader,
-    to preserve the order of panoramic views.
+    """Single-frame evaluation, one panorama (3 ordered views) per batch.
+
+    The val loader (batch_size=3, no shuffle, worker processes) yields the
+    packed views in panorama order, so every batch is one view1/view2/view3
+    triple and the workers overlap the preprocessing with the GPU forward.
+    `num` limits the number of batches.
     """
     num_views = 3
     ppm = model.model.conf.pixel_per_meter
@@ -67,41 +69,32 @@ def evaluate_single_image(
     metrics["directional_error"] = LateralLongitudinalError(ppm)
     metrics = metrics.to(model.device)
 
-    dataset = dataloader.dataset
-    num_panoramas = len(dataset) // num_views
-    if num is not None:
-        num_panoramas = min(num, num_panoramas)
-
-    for i in tqdm(range(num_panoramas), total=num_panoramas, disable=not progress):
-        start_idx = i * num_views
-        # Manually create a batch of num_views for one panorama
-        # batch_list = [dataset[start_idx], dataset[start_idx+1], dataset[start_idx+2], dataset[start_idx+3]]
-        batch_list = [dataset[start_idx], dataset[start_idx+1], dataset[start_idx+2]]
-        # The model treats any batch of 3 as a panorama; guard against
-        # silently pairing views of different panoramas (or out of order).
-        names = [item["name"] for item in batch_list]
-        assert len({n.rsplit("_", 1)[0] for n in names}) == 1 and [
-            n.rsplit("_", 1)[1] for n in names
-        ] == ["view1", "view2", "view3"], f"Not a valid panorama triple: {names}"
-        batch_ = collate(batch_list)
+    for i, batch_ in enumerate(
+        islice(tqdm(dataloader, total=num, disable=not progress), num)
+    ):
+        # The model treats every 3 consecutive samples as a panorama; guard
+        # against silently pairing views of different panoramas (or out of order).
+        names = batch_["name"]
+        for v in range(0, len(names), num_views):
+            triple = names[v : v + num_views]
+            assert len({n.rsplit("_", 1)[0] for n in triple}) == 1 and [
+                n.rsplit("_", 1)[1] for n in triple
+            ] == ["view1", "view2", "view3"], f"Not a valid panorama triple: {triple}"
         batch = model.transfer_batch_to_device(batch_, model.device, i)
 
-        # Ablation: mask semantic classes
+        # Ablation: mask semantic classes on all views
         if mask_index is not None:
-            # Apply mask to all num_views views in the panorama
-            for view_idx in range(num_views):
+            for view_idx in range(batch["map"].shape[0]):
                 mask = batch["map"][view_idx, mask_index[0]] == (mask_index[1] + 1)
                 batch["map"][view_idx, mask_index[0]][mask] = 0
-        
-        pred = model(batch)
-        
-        # In panorama mode, ground truth corresponds to the first view
-        gt_data = batch_list[0]
 
-        # The metrics have been updated to handle panorama logic via 'is_panorama' flag
-        results = metrics(pred, batch) 
+        pred = model(batch)
+
+        # The metrics handle the panorama logic via the 'is_panorama' flag
+        results = metrics(pred, batch)
         if callback is not None:
-            # For visualization, we typically want to show the main view (view 1)
+            # Visualization shows the main view (view1) of the first panorama
+            gt_data = {k: v[0] for k, v in batch_.items()}
             callback(
                 i, model, unbatch_to_device(pred), unbatch_to_device(gt_data), results
             )
@@ -112,11 +105,11 @@ def evaluate_single_image(
 
 @torch.no_grad()
 def evaluate_sequential(
-    dataset: torch.utils.data.Dataset,
+    loader: torch.utils.data.DataLoader,
+    seq_keys: List,
     seq2idx: Dict,
     model: GenericModule,
     num: Optional[int] = None,
-    shuffle: bool = False,
     callback: Optional[Callable] = None,
     progress: bool = True,
     mask_index: Optional[Tuple[int]] = None,
@@ -124,15 +117,19 @@ def evaluate_sequential(
     obs_weight_gamma: float = 1.0,
     readout_radius: int = 3,
 ):
+    """Sequence evaluation over `datamodule.sequence_dataloader(split)`.
+
+    The loader yields the single samples trajectory by trajectory in the order
+    of `seq_keys` (view1/view2/view3 per panorama), preprocessed in worker
+    processes; shuffling is decided when the loader is built. `num` limits the
+    number of trajectories.
+    """
     num_views = 3
-    seq_keys = list(seq2idx)
-    if shuffle:
-        seq_keys = [seq_keys[i] for i in torch.randperm(len(seq_keys))]
     if num is not None:
         seq_keys = seq_keys[:num]
     lengths = [len(seq2idx[k]) // num_views for k in seq_keys] # Length in panoramas
     logger.info(
-        "Min/max/med trajectory lengths: %d/%d/%d, total number of panoramas: %d",
+        "Min/med/max trajectory lengths: %d/%d/%d, total number of panoramas: %d",
         min(lengths),
         np.median(lengths),
         max(lengths),
@@ -152,13 +149,9 @@ def evaluate_sequential(
     if viz:
         keys_save.append("log_probs")
 
+    samples = iter(loader)
     for seq_index, key in enumerate(tqdm(seq_keys, disable=not progress)):
-        indices = seq2idx[key]
-        num_panoramas = len(indices) // num_views
-
-        if num_panoramas == 0:
-            continue
-
+        num_panoramas = len(seq2idx[key]) // num_views
         aligner = RigidAligner()
 
         gt_batches = []
@@ -166,9 +159,8 @@ def evaluate_sequential(
         uvt_online = []
 
         for i in range(num_panoramas):
-            start_idx = i * num_views
-            # Manually create a batch of num_views for one panorama
-            batch_list = [dataset[indices[start_idx + v]] for v in range(num_views)]
+            # The next 3 samples of the loader are the views of one panorama
+            batch_list = [next(samples) for _ in range(num_views)]
             # The model treats any batch of 3 as a panorama; guard against
             # silently pairing views of different panoramas (or out of order).
             names = [item["name"] for item in batch_list]
@@ -233,7 +225,7 @@ def evaluate(
     sequential: bool = False,
     output_dir: Optional[Path] = None,
     callback: Optional[Callable] = None,
-    num_workers: int = 1,
+    num_workers: Optional[int] = None,  # None: num_workers of the data config
     viz_kwargs=None,
     **kwargs,
 ):
@@ -266,12 +258,18 @@ def evaluate(
     kwargs = {**kwargs, "callback": callback}
 
     seed_everything(dataset.cfg.seed)
+    # 预处理交给 DataLoader worker(worker 内 torch 线程数为 1),但主进程仍有少量 CPU 张量
+    # 运算,而主进程的 intra-op 线程数默认等于机器核数:共享机器上只要有一个核被别的进程占着,
+    # 每个 OpenMP 并行区都会在 barrier 上等调度(实测慢 15 倍以上),故限制线程数。
+    torch.set_num_threads(8)
     if sequential:
-        dset, seq2idx = dataset.sequence_dataset(split)
-        metrics = evaluate_sequential(dset, seq2idx, model, **kwargs)
+        loader, seq_keys, seq2idx = dataset.sequence_dataloader(
+            split, shuffle=kwargs.pop("shuffle", False)
+        )
+        metrics = evaluate_sequential(loader, seq_keys, seq2idx, model, **kwargs)
     else:
-        # Note: num_workers > 0 might cause issues if the dataset is not thread-safe.
-        # For our new panorama logic, we use a dataloader just to access the dataset.
+        # val loader: batch_size=3 = one ordered panorama per batch, no shuffle,
+        # preprocessing in worker processes overlapped with the GPU forward.
         loader = dataset.dataloader(split, shuffle=False, num_workers=num_workers)
         metrics = evaluate_single_image(loader, model, **kwargs)
 
