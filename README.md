@@ -6,8 +6,7 @@ proposes pose hypotheses, language verifies them. The repository holds
 - the two image-only baselines the project builds on: **RHO** (`orienternet_fused_prior`:
   OrienterNet-style localization of a three-view panorama with a fused xy / yaw prior and
   sequence-mode belief aggregation) and the original **OrienterNet** (`orienternet`);
-- the text models **TextVerifyItems** (`orienternet_verify_items`, the current design) and its
-  predecessor **TextVerify** (`orienternet_verify`);
+- the text model **TextVerifyItems** (`orienternet_verify_items`);
 - the **stage-A caption** generator (`maploc/data/stage_a_captions.py`), which turns the OSM
   facts visible from a view into a fixed-grammar description.
 
@@ -21,12 +20,11 @@ and the urban CV-RHO set (`chicago`, `detroit`, `sanfrancisco`, `washington`, `m
 |---|---|
 | `maploc/models/orienternet_fused_prior.py` | RHO image model: BEV projection, panorama stitching, exhaustive matching, fused xy / yaw prior |
 | `maploc/models/orienternet_verify_items.py` | TextVerifyItems: item verifier over the three view captions |
-| `maploc/models/orienternet_verify.py` | TextVerify: area-fraction verifier over the view1 caption (predecessor; base class of the above) |
-| `maploc/models/text_verifier.py` | shared verifier parts: frozen T5 encoder, region-query cross-attention head, NMS of the posterior, listwise target, basin re-weighting |
-| `maploc/models/egocentric.py` | OSM labels seen from a pose, camera-frame grids, FOV wedge (coordinate conventions) |
+| `maploc/models/text_verifier.py` | verifier parts: frozen T5 encoder, region-query cross-attention head, NMS of the posterior, listwise target, basin re-weighting |
+| `maploc/models/egocentric.py` | OSM labels seen from a pose and the FOV wedge, used by the stage-A captions (coordinate conventions) |
 | `maploc/data/stage_a_captions.py` | stage-A captions: visible OSM facts per bearing sector × range band, rendering / parsing, item tensors; generation CLI |
 | `maploc/data/dataset.py`, `maploc/data/mapillary/dataset.py` | datasets and datamodules (captions, uncut `map_desc` raster, panorama-consistent flip) |
-| `maploc/conf/{rho,verify,verify_items,onet}.yaml` | training top-levels; `maploc/conf/data/<scene>.yaml` per scene |
+| `maploc/conf/{rho,verify_items,onet}.yaml` | training top-levels; `maploc/conf/data/<scene>.yaml` per scene |
 | `maploc/evaluation/eval_rho.py`, `maploc/evaluation/eval_onet.py` | evaluation entry points |
 
 ## Setup
@@ -112,7 +110,7 @@ python -m maploc.evaluation.eval_rho --experiment RHO_<scene> --scene <scene> \
 - `--scene` selects `conf/data/<scene>.yaml` and `splits_RHO_<scene>.json`.
 - The model defaults to `orienternet_fused_prior`; the road prior applies only in the sequence
   aggregation, not in the single-frame forward. Other models need the dotlist override
-  `model.name=<name>` (see the text models below).
+  `model.name=<name>` (see the text model below).
 - `--sequential` evaluates full trajectories with the recursive filter (`maploc/models/sequential.py`);
   knobs `--recovery_eps 0.01 --obs_weight_gamma 1.0 --readout_radius 3` (road-prior recovery,
   entropy-weighted observations, local-expectation readout). Without it, single frames.
@@ -121,12 +119,14 @@ python -m maploc.evaluation.eval_rho --experiment RHO_<scene> --scene <scene> \
 It prints the xy / yaw errors and `Recall @1/3/5` (m / °); in sequence mode also `xy_seq_error` /
 `yaw_seq_error`. The sequence length is the full trajectory from the split file.
 
-## Text models
+## Text model: TextVerifyItems
 
-Both text models keep the RHO image branch and training protocol unchanged (from scratch, only T5
-frozen, the verifier parameters at `training.lr_text`) and let language **choose between the
-image's pose hypotheses**: the image posterior is reduced to its top-K modes by non-maximum
-suppression (5 m / 20°), a verifier scores every mode from the caption(s), and the posterior is
+TextVerifyItems (`orienternet_verify_items`, `conf/verify_items.yaml`) keeps the RHO image branch and
+training protocol unchanged (from scratch, only T5 frozen, the verifier parameters at
+`training.lr_text`) and lets language **choose between the image's pose hypotheses**. Its samples are
+the RHO samples plus the captions and `map_desc`, whose centre is the model's map crop, so the image
+branch gets exactly the baseline's input. The image posterior is reduced to its top-K modes by non-maximum
+suppression (5 m / 20°), a verifier scores every mode from the three view captions, and the posterior is
 re-weighted basin by basin (the image shape is kept inside a basin, the verifier ranks the basins),
 so `uv_max` is the selected mode and the sequence filter consumes the re-weighted `log_probs`.
 The image NLL is computed on the pure image posterior, so the image branch trains exactly as the
@@ -137,7 +137,7 @@ Extra validation metrics: `xy_max_error_img` / `yaw_max_error_img` (image arg-ma
 (the selected mode is the one nearest to the ground truth, over samples that have a mode within
 5 m / 20°) and `mode_recall` (such a mode exists among the K).
 
-### TextVerifyItems (`orienternet_verify_items`, `conf/verify_items.yaml`)
+### Verifier
 
 For each of the three view captions a region-query head (frozen `t5-base` tokens → 15 region
 queries with cross-attention) predicts the stage-A items of that view: the coverage level of every
@@ -166,18 +166,6 @@ checkpoint config is merged. `model.verify.blank_captions=true` at evaluation bl
 a trained model (test-time control); `model.verify.K_eval=20` scores more hypotheses without
 retraining.
 
-### TextVerify (`orienternet_verify`, `conf/verify.yaml`)
-
-The first verifier: the `view1` caption predicts the OSM area-class fractions of 5 bearing
-sectors × 3 range bins (0–32 m, 2 m grid) and every mode is scored by the L1 similarity of its
-fractions. It is kept as an ablation and because TextVerifyItems inherits from it.
-
-```bash
-python -m maploc.train --config-name=verify data=<scene> experiment.name=TextVerify_RHO_<scene>
-python -m maploc.evaluation.eval_rho --experiment TextVerify_RHO_<scene> --scene <scene> \
-  model.name=orienternet_verify data.captions=true model.num_rotations=256 [--sequential]
-```
-
 ## OrienterNet baseline (onet)
 
 The OrienterNet baseline mirrors the RHO line on the same per-scene configs: the original
@@ -201,6 +189,10 @@ Sequences are the full `view1` stream ordered by capture time, without chunking.
   caption rendered into an egocentric OSM sketch and matched by class agreement) and a probe that
   predicted the same sketch from image BEV features. Their write-ups live in `docs/`
   (`research-LR-BEV-*.md`), their checkpoints under `experiments/Text_RHO_*`.
+- A first verifier, TextVerify (the `view1` caption predicted the OSM area fractions of 5 bearing
+  sectors × 3 range bins in the 0–32 m view wedge; modes scored by L1 similarity), was outperformed
+  by TextVerifyItems with the same captions and removed on 2026-11-08. Its code is in the git history
+  up to commit `54e91b2`, its checkpoints under `experiments/TextVerify_RHO_*`.
 - `docs/` (research notes and design specs) and `maploc/dev/` (tests of the models, of the panorama
   geometry fixes and of the stage-A code; preliminary studies such as top-K selection ceilings and
   caption / image → descriptor regressions; paired analyses of evaluation dumps) are not tracked by git.

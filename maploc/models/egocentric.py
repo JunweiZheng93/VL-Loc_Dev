@@ -1,5 +1,5 @@
-"""Egocentric OSM utilities shared by the text models and the stage-A captions: camera-frame
-grids, the field-of-view wedge, the OSM class labels seen from a pose and one-hot maps.
+"""Egocentric OSM utilities of the stage-A captions: the field-of-view wedge and the OSM class
+labels seen from a pose.
 
 Conventions (pinned against a trained model by maploc/dev/test_egocentric_labels.py):
   * map raster: row 0 = north, column 0 = west (Canvas.to_uv flips y);
@@ -12,20 +12,6 @@ A BEV cell (x, z) seen from pose (u, v, yaw) lies at the map offset
 import numpy as np
 import torch
 import torch.nn.functional as F
-
-from .utils import make_grid
-
-NUM_AREAS = 7  # areas classes without "none"
-NUM_WAYS = 10  # ways classes without "none"
-
-
-def coarse_grid_xz(z_max: float, x_max: float, cell: float) -> torch.Tensor:
-    """Cell centres of a camera-frame grid: x in [-x_max, x_max], z in [0, z_max],
-    row 0 = far (same orientation as CartesianProjection.grid_xz). [h, w, 2]"""
-    return make_grid(
-        2 * x_max, z_max, step_x=cell, step_y=cell,
-        orig_x=-x_max + cell / 2, orig_y=cell / 2, y_up=True,
-    )
 
 
 def fov_mask(grid_xz: torch.Tensor, fov_deg: float = 120.0, z_max: float = 32.0) -> torch.Tensor:
@@ -55,10 +41,3 @@ def egocentric_labels(
         map_raster.float(), grid, mode="nearest", padding_mode="zeros", align_corners=True
     )
     return out.round().long()
-
-
-def map_to_onehot(map_raster: torch.Tensor) -> torch.Tensor:
-    """[B,3,H,W] class indices -> [B,19,H,W] float one-hot of areas (8) and ways (11)."""
-    areas = F.one_hot(map_raster[:, 0].clamp(0, NUM_AREAS), NUM_AREAS + 1)
-    ways = F.one_hot(map_raster[:, 1].clamp(0, NUM_WAYS), NUM_WAYS + 1)
-    return torch.cat([areas, ways], -1).permute(0, 3, 1, 2).float()

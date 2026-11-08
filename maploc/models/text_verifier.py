@@ -1,17 +1,15 @@
-"""Hypothesis-level text verifier (design C, spec
-docs/superpowers/specs/2026-11-07-language-verified-hypotheses-design.md): region geometry
-of the egocentric descriptor, OSM region-fraction descriptors, greedy NMS of the image
-posterior, descriptor similarity, listwise target, basin re-weighting of the posterior and
-the caption -> descriptor verifier (frozen T5 tokens -> region queries)."""
+"""Parts of the hypothesis-level text verifier (spec
+docs/superpowers/specs/2026-11-07-language-verified-hypotheses-design.md): the frozen caption
+encoder, greedy NMS of the image posterior, the listwise target, basin re-weighting of the
+posterior, left-right mirroring of region tensors and the region-query verifier (frozen T5
+tokens -> region queries)."""
 import math
 from typing import List, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from .egocentric import coarse_grid_xz, fov_mask
 from .voting import log_softmax_spatial
 
 
@@ -50,41 +48,11 @@ class TextEncoder(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# geometry and descriptors
+# regions
 # ---------------------------------------------------------------------------
-def region_geometry(
-    sectors: int, ranges: int, z_max: float, x_max: float, cell: float, fov_deg: float
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Coarse camera-frame grid [h, w, 2], region id of every cell [h, w] (sector * ranges
-    + range bin, -1 outside the FOV wedge) and region centres [R, 2] = (mean bearing in
-    rad, mean range / z_max) of the cells of every region."""
-    grid = coarse_grid_xz(z_max, x_max, cell)
-    valid = fov_mask(grid, fov_deg, z_max)
-    x, z = grid[..., 0], grid[..., 1]
-    half = math.radians(fov_deg / 2)
-    phi = torch.atan2(x, z)
-    sct = ((phi + half) / (2 * half) * sectors).floor().clamp(0, sectors - 1)
-    rr = torch.sqrt(x**2 + z**2) / z_max
-    rng = (rr * ranges).floor().clamp(0, ranges - 1)
-    region = torch.where(valid, (sct * ranges + rng).long(), torch.full(grid.shape[:2], -1, dtype=torch.long))
-    R = sectors * ranges
-    centres = torch.zeros(R, 2)
-    for r in range(R):
-        cells = region == r
-        assert cells.any(), f"region {r} has no cell: too many sectors / ranges for this grid"
-        centres[r, 0], centres[r, 1] = phi[cells].mean(), rr[cells].mean()
-    return grid, region, centres
-
-
-def region_fractions(onehot: torch.Tensor, region: torch.Tensor, R: int) -> torch.Tensor:
-    """Class fractions per region: onehot [N, C, h, w], region [h, w] -> [N, R, C]."""
-    reg = F.one_hot(region.clamp(min=0), R).to(onehot) * (region >= 0)[..., None].to(onehot)  # [h, w, R]
-    counts = reg.sum((0, 1)).clamp(min=1)  # [R]
-    return torch.einsum("nchw,hwr->nrc", onehot, reg) / counts[None, :, None]
-
-
 def mirror_regions(x: torch.Tensor, sectors: int, ranges: int) -> torch.Tensor:
-    """Left-right mirror of a region descriptor [..., R, C]: sector s <-> sectors - 1 - s."""
+    """Left-right mirror of a region tensor [..., R, C] (region = sector * ranges + range bin):
+    sector s <-> sectors - 1 - s."""
     perm = torch.tensor(
         [(sectors - 1 - s) * ranges + m for s in range(sectors) for m in range(ranges)], device=x.device
     )
@@ -129,13 +97,6 @@ def nms_modes(log_probs: torch.Tensor, K: int, r_px: int, r_bins: int):
     return modes, logp, valid, basin
 
 
-def descriptor_similarity(d_hat: torch.Tensor, d_modes: torch.Tensor, region_w: torch.Tensor) -> torch.Tensor:
-    """sum_r softmax(w)_r (1 - 1/2 ||d_hat_r - d_{k,r}||_1): d_hat [B, R, C], d_modes [B, K, R, C] -> [B, K]."""
-    w = torch.softmax(region_w, 0)
-    l1 = (d_hat[:, None] - d_modes).abs().sum(-1)  # [B, K, R]
-    return ((1 - 0.5 * l1) * w).sum(-1)
-
-
 def listwise_target(
     modes: torch.Tensor, valid: torch.Tensor, xy_gt: torch.Tensor, yaw_gt: torch.Tensor,
     num_rotations: int, ppm: float, r_m: float, r_deg: float,
@@ -172,7 +133,7 @@ def reweight_log_probs(
 
 
 # ---------------------------------------------------------------------------
-# caption -> descriptor verifier
+# caption -> region verifier
 # ---------------------------------------------------------------------------
 def region_features(centres: torch.Tensor, num_freqs: int = 3) -> torch.Tensor:
     """[R, 2] (bearing rad, range) -> [R, 4 + 4 * num_freqs]."""
@@ -185,7 +146,7 @@ def region_features(centres: torch.Tensor, num_freqs: int = 3) -> torch.Tensor:
 
 
 class CrossAttnLayer(nn.Module):
-    """Pre-norm cross-attention + FFN, no self-attention (R queries attend to <= 64 tokens)."""
+    """Pre-norm cross-attention + FFN, no self-attention (the R region queries attend to the caption tokens)."""
 
     def __init__(self, d: int, heads: int, ffn: int):
         super().__init__()
@@ -200,8 +161,7 @@ class CrossAttnLayer(nn.Module):
 
 class RegionVerifier(nn.Module):
     """Learnable region queries (+ region position features) cross-attend to caption
-    tokens and predict the OSM class logits of every region: [B, L, text_dim] -> [B, R, C]
-    (softmax over C gives the fractions; log-softmax feeds the descriptor cross-entropy)."""
+    tokens and predict num_classes logits for every region: [B, L, text_dim] -> [B, R, C]."""
 
     def __init__(
         self, text_dim: int, centres: torch.Tensor, d_model: int = 256, layers: int = 2,

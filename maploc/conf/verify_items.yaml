@@ -1,19 +1,44 @@
-# TextVerifyItems · RHO + 三条 caption 的条目验证器(与阶段 A caption 匹配的设计 C,spec docs/superpowers/specs/2026-11-08-item-verifier-design.md)
-# 图像分支与提峰同设计 C;验证器读三个视图的 caption,预测阶段 A 条目(5 扇区 × 近 0–10 / 中 10–30 / 远 30–64 m:面状类覆盖档次、道路、点要素),
-# 在不截断的 ±136 m 栅格(map_desc)上用生成 caption 的同一套代码算每个峰的条目,软 Jaccard 打分选峰。
+# TextVerifyItems · RHO + 三条 caption 的条目验证器(spec docs/superpowers/specs/2026-11-08-item-verifier-design.md)
+# 图像分支即 RHO,照旧算后验并取前 K 个峰;验证器读三个视图的 caption,预测阶段 A 条目(5 扇区 × 近 0–10 / 中 10–30 / 远 30–64 m:
+# 面状类覆盖档次、道路、点要素),在不截断的 ±136 m 栅格(map_desc)上用生成 caption 的同一套代码算每个峰的条目,软 Jaccard 打分选峰;
+# 后验按盆地重排(盆地内保留图像形状,盆地间由验证器决定)。
+# 协议:与 RHO 基线完全相同的从零训练(rho.yaml),只有 T5 冻结;验证器参数用 training.lr_text。
 # 启动:python -m maploc.train --config-name=verify_items data=neuanspach experiment.name=TextVerifyItems_RHO_neuanspach_stageA
 #   对照:model.verify.blank_captions=true(三条 caption 置空);data.captions=true(原 VLM caption)
 # 评测:python -m maploc.evaluation.eval_rho --experiment <run> --scene neuanspach model.name=orienternet_verify_items model.num_rotations=256 \
 #         data.captions=stageA data.desc_crop_meters=136 --output_dir eval_logs/TextVerifyItems_eval_<日期>/<run>
 defaults:
-  - verify
+  - rho
   - _self_
 
 model:
   name: orienternet_verify_items
   verify:
+    K: 10                  # 训练期候选峰数:前 10 个峰覆盖 64% / 87% 的真值(neuanspach / washington)
+    K_eval: 10             # 评测期候选峰数(评测时可改 20)
+    nms_xy: 5.0            # 非极大值抑制半径(m),也是 listwise 目标的距离阈值
+    nms_yaw: 20.0          # 非极大值抑制的旋转半径(°),也是 listwise 目标的角度阈值
+    encoder: t5-base       # 冻结的文本编码器
     max_tokens: 192        # 阶段 A caption 平均 89、最长 260 个 T5 token
+    d_model: 256           # 区域查询验证器:2 层交叉注意力(无自注意力)
+    layers: 2
+    heads: 8
+    ffn: 512
+    tau_init: 10.0         # 候选分数的温度初值(可学习)
+    learn_beta: true       # 是否学习图像项 beta(初值 0,只经 listwise 损失学习)
+    alpha_d: 1.0           # 条目 CE 权重(稠密,每个样本都有)
+    alpha_l: 1.0           # 候选 listwise CE 权重(只有它训练 tau / beta)
+    blank_captions: false  # true = 三条 caption 置空(w/o text 对照)
 
 data:
   captions: stageA         # 读 captions/<scene>_stageA.json
   desc_crop_meters: 136    # map_desc 半宽:训练初始误差 48 m 时峰 / 真值离中心 ≤ 69.3 m,再加 64 m 视锥
+
+training:
+  lr_text: 1e-4            # 验证器(verifier / log_tau / beta)的学习率;基座沿用 rho 的 1e-5
+  # 学习率调度与 checkpoint 选择只看图像 NLL(基线看的就是它:基线的 total == nll),
+  # 否则条目 CE / listwise 会改变图像分支的降学习率时机和被评测的 epoch,"图像分支与基线一致"就不成立
+  lr_scheduler:
+    monitor: loss/nll/val
+  checkpointing:
+    monitor: loss/nll/val

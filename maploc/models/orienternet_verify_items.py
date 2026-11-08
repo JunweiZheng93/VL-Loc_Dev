@@ -1,10 +1,11 @@
 """OrienterNet (RHO fused_prior) + three-caption item verification (spec
-docs/superpowers/specs/2026-11-08-item-verifier-design.md): design C with a verifier whose target
-matches the stage-A captions. For each of the three view captions a region-query head predicts the
-stage-A items (5 sectors x 3 bands, 0-64 m: coverage level of every area class, roads, point features);
-every top-K mode of the image posterior is scored by the soft Jaccard between the predicted items and
-the items the stage-A code (maploc/data/stage_a_captions.py) computes at that mode on the uncut
-map_desc raster. Proposals, listwise loss and basin re-weighting are those of design C."""
+docs/superpowers/specs/2026-11-08-item-verifier-design.md). The image branch is the RHO model unchanged and
+proposes the top-K modes of its posterior (greedy NMS). For each of the three view captions a region-query
+head predicts the stage-A items (5 sectors x 3 bands, 0-64 m: coverage level of every area class, roads,
+point features); every mode is scored by the soft Jaccard between the predicted items and the items the
+stage-A code (maploc/data/stage_a_captions.py) computes at that mode on the uncut map_desc raster. A
+listwise loss trains the mode scores, and the posterior is re-weighted basin by basin (image shape inside
+a basin, verifier ranking between basins)."""
 import math
 
 import torch
@@ -12,8 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..data import stage_a_captions as SA
+from .metrics_v1gt import AngleError, Location2DError, MeanMetricWithRecall
 from .orienternet_fused_prior import OrienterNet as OrienterNetFusedPrior
-from .orienternet_verify import OrienterNetVerify
 from .text_verifier import RegionVerifier, TextEncoder, listwise_target, mirror_regions, nms_modes, reweight_log_probs
 from .voting import argmax_xyr, expectation_xyr
 
@@ -45,15 +46,76 @@ def item_probs(logits: torch.Tensor) -> torch.Tensor:
     return torch.cat([lv, ways, nodes], -1)
 
 
-class OrienterNetVerifyItems(OrienterNetVerify):
+class ImageLocation2DError(Location2DError):
+    """Image-only read-out (what the base answers without text); distinct class so that
+    torchmetrics' compute groups never merge it with the main metric."""
+
+
+class ImageAngleError(AngleError):
+    """Image-only read-out; distinct class as above."""
+
+
+class MeanOfKey(MeanMetricWithRecall):
+    """Mean of a per-sample tensor pred[key]; NaN entries (samples without a target) are skipped."""
+
+    def __init__(self, key):
+        super().__init__()
+        self.key = key
+
+    def update(self, pred, data):
+        v = pred[self.key].float()
+        v = v[torch.isfinite(v)]
+        if v.numel():
+            self.value.append(v)
+
+    def get_errors(self):
+        v = self.value
+        if isinstance(v, list):
+            return torch.cat(v) if v else torch.zeros(0, device=self.device)
+        return v
+
+    def compute(self):
+        # no sample had a target yet (untrained model, tiny validation): NaN instead of a crash
+        v = self.value
+        if isinstance(v, list):
+            if not v:
+                return torch.tensor(float("nan"), device=self.device)
+            v = torch.cat(v)
+        return v.mean(0) if v.numel() else torch.tensor(float("nan"), device=self.device)
+
+
+class OrienterNetVerifyItems(OrienterNetFusedPrior):
     default_conf = {
-        **OrienterNetVerify.default_conf,
-        "verify": {**OrienterNetVerify.default_conf["verify"], "max_tokens": 192, "desc_offsets": list(OFF)},
+        **OrienterNetFusedPrior.default_conf,
+        "verify": {
+            "K": 10,
+            "K_eval": 10,
+            "nms_xy": 5.0,
+            "nms_yaw": 20.0,
+            # unused: settings of the removed first verifier, listed in the configs of the runs trained
+            # before 2026-11-08; kept so that those checkpoints still load (the conf is merged in struct mode)
+            "sectors": 5,
+            "ranges": 3,
+            "coarse_cell": 2.0,
+            "fov_deg": 120.0,
+            "encoder": "t5-base",
+            "max_tokens": 192,
+            "d_model": 256,
+            "layers": 2,
+            "heads": 8,
+            "ffn": 512,
+            "tau_init": 10.0,
+            "learn_beta": True,
+            "alpha_d": 1.0,
+            "alpha_l": 1.0,
+            "blank_captions": False,
+            "desc_offsets": list(OFF),
+        },
     }
     TEXT_PREFIXES = ("verifier.", "log_tau", "beta")
 
     def _init(self, conf):
-        OrienterNetFusedPrior._init(self, conf)  # image branch only; the verifier differs from design C
+        super()._init(conf)  # the RHO image branch
         v = conf.verify
         self.text_encoder = TextEncoder(v.encoder, v.max_tokens)
         self.geo = SA.make_geometry()  # CPU tensors, moved per call by stage_a_captions
@@ -66,6 +128,10 @@ class OrienterNetVerifyItems(OrienterNetVerify):
         )
         self.log_tau = nn.Parameter(torch.tensor(math.log(float(v.tau_init))))
         self.beta = nn.Parameter(torch.zeros(()), requires_grad=bool(v.learn_beta))
+
+    def text_parameter_names(self):
+        """Verifier parameters (trained at training.lr_text; the base keeps training.lr)."""
+        return [n for n, _ in self.named_parameters() if n.startswith(self.TEXT_PREFIXES)]
 
     def _captions(self, data):
         caps = list(data["caption"])  # 3 per panorama, view1 / view2 / view3
@@ -162,7 +228,7 @@ class OrienterNetVerifyItems(OrienterNetVerify):
 
     def loss(self, pred, data):
         # image NLL on the pure image posterior: the image branch trains exactly as the RHO baseline
-        losses = OrienterNetFusedPrior.loss(self, {**pred, "log_probs": pred["log_probs_img"]}, data)
+        losses = super().loss({**pred, "log_probs": pred["log_probs_img"]}, data)
         v = self.conf.verify
         lg, y = pred["item_logits"], pred["y_gt"]
         lv = lg[..., :N_AREA_LOGITS].unflatten(-1, (len(SA.AREAS), N_LEVELS))
@@ -176,9 +242,18 @@ class OrienterNetVerifyItems(OrienterNetVerify):
         has = target >= 0
         picked = -pred["log_q"].gather(1, target.clamp(min=0)[:, None])[:, 0]
         listwise = torch.where(has, picked, torch.zeros_like(picked))
-        losses["desc_ce"], losses["listwise"] = item, listwise  # "desc_ce" keeps the design-C log tag
+        losses["desc_ce"], losses["listwise"] = item, listwise  # item CE logged as "desc_ce", as in all runs so far
         if v.alpha_d:
             losses["total"] = losses["total"] + v.alpha_d * item
         if v.alpha_l:
             losses["total"] = losses["total"] + v.alpha_l * listwise
         return losses
+
+    def metrics(self):
+        return {
+            **super().metrics(),
+            "xy_max_error_img": ImageLocation2DError("uv_max_img", self.conf.pixel_per_meter),
+            "yaw_max_error_img": ImageAngleError("yaw_max_img"),
+            "select_acc": MeanOfKey("select_hit"),
+            "mode_recall": MeanOfKey("recall_hit"),
+        }
