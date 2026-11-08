@@ -38,13 +38,15 @@ def resolve_checkpoint_path(experiment_or_path: str) -> Path:
                 raise FileNotFoundError(path)
     if path.is_file():
         return path
-    # provided only the experiment name
-    maybe_path = path / "last-step.ckpt"
-    if not maybe_path.exists():
-        maybe_path = path / "step.ckpt"
-    if not maybe_path.exists():
-        raise FileNotFoundError(f"Could not find any checkpoint in {path}.")
-    return maybe_path
+    # provided only the experiment name: last.ckpt (refreshed at every epoch-level save)
+    # carries the states of both ModelCheckpoint callbacks, so find_best can pick the
+    # lowest loss/total/val checkpoint; last-step.ckpt is only written every 20000 steps
+    # and may be stale (step 83 in the from-scratch runs).
+    for name in ("last.ckpt", "last-step.ckpt", "step.ckpt"):
+        maybe_path = path / name
+        if maybe_path.exists():
+            return maybe_path
+    raise FileNotFoundError(f"Could not find any checkpoint in {path}.")
 
 
 @torch.no_grad()
@@ -65,7 +67,7 @@ def evaluate_single_image(
     """
     num_views = 3
     ppm = model.model.conf.pixel_per_meter
-    metrics = MetricCollection(model.model.metrics())
+    metrics = MetricCollection(model.model.metrics(), compute_groups=False)
     metrics["directional_error"] = LateralLongitudinalError(ppm)
     metrics = metrics.to(model.device)
 
@@ -137,7 +139,7 @@ def evaluate_sequential(
     )
     viz = callback is not None
 
-    metrics = MetricCollection(model.model.metrics())
+    metrics = MetricCollection(model.model.metrics(), compute_groups=False)
     ppm = model.model.conf.pixel_per_meter
     metrics["directional_error"] = LateralLongitudinalError(ppm)
     metrics["xy_seq_error"] = Location2DError("uv_seq", ppm)
@@ -145,7 +147,11 @@ def evaluate_sequential(
     metrics["directional_seq_error"] = LateralLongitudinalError(ppm, key="uv_seq")
     metrics = metrics.to(model.device)
 
-    keys_save = ["uvr_max", "uv_max", "yaw_max", "uv_expectation"]
+    # read-outs the model's metrics consume (e.g. the image-only argmax of the text verifiers)
+    keys_save = sorted(
+        {"uvr_max", "uv_max", "yaw_max", "uv_expectation"}
+        | {m.key for m in model.model.metrics().values() if hasattr(m, "key")}
+    )
     if viz:
         keys_save.append("log_probs")
 
@@ -227,6 +233,7 @@ def evaluate(
     callback: Optional[Callable] = None,
     num_workers: Optional[int] = None,  # None: num_workers of the data config
     viz_kwargs=None,
+    viz: bool = False,  # per-example plots are opt-in: plot_example_* predate the panorama model
     **kwargs,
 ):
     if experiment in pretrained_models:
@@ -247,7 +254,7 @@ def evaluate(
 
     if output_dir is not None:
         output_dir.mkdir(exist_ok=True, parents=True)
-        if callback is None:
+        if callback is None and viz:
             if sequential:
                 callback = plot_example_sequential
             else:

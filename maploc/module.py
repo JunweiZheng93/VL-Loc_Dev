@@ -30,7 +30,9 @@ class GenericModule(pl.LightningModule):
         self.model = get_model(name)(cfg.model)
         self.cfg = cfg
         self.save_hyperparameters(cfg)
-        self.metrics_val = MetricCollection(self.model.metrics(), prefix="val/")
+        self.metrics_val = MetricCollection(
+            self.model.metrics(), prefix="val/", compute_groups=False
+        )
         self.losses_val = None  # we do not know the loss keys in advance
 
     def forward(self, batch):
