@@ -32,22 +32,34 @@ def random_rot90(raster, xy, heading, seed=None):
     return raster, xy2, heading
 
 
-def random_flip(image, raster, xy, heading, seed=None):
+def flip_decision(seed=None):
+    """The random draws of random_flip: (mirrored, raster mirrored along x rather than along y)."""
     state = np.random.RandomState(seed)
-    if state.rand() > 0.5:  # no flip
+    mirrored = bool(state.rand() <= 0.5)
+    return mirrored, bool(state.rand() > 0.5) if mirrored else False
+
+
+def mirror_raster(raster, flip_x):
+    """Mirror a raster [..., H, W] along x (columns) or along y (rows)."""
+    return raster[..., :, ::-1] if flip_x else raster[..., ::-1, :]
+
+
+def random_flip(image, raster, xy, heading, seed=None):
+    """Mirror the image with probability 1/2; the map raster is then mirrored along x or y (1/2 each),
+    with the pixel position xy and the heading (rad) following it."""
+    mirrored, flip_x = flip_decision(seed)
+    if not mirrored:
         return image, raster, xy, heading
     image = image[:, ::-1]
+    raster = mirror_raster(raster, flip_x)
     h, w = raster.shape[-2:]
-    if state.rand() > 0.5:  # flip x
-        raster = raster[..., :, ::-1]
+    if flip_x:
         xy = np.array([w - 1 - xy[0], xy[1]])
         heading = np.pi - heading
-    else:  # flip y
-        raster = raster[..., ::-1, :]
+    else:
         xy = np.array([xy[0], h - 1 - xy[1]])
         heading = -heading
-    heading = heading % (2 * np.pi)
-    return image, raster, xy, heading
+    return image, raster, xy, heading % (2 * np.pi)
 
 
 def decompose_rotmat(R_c2w):

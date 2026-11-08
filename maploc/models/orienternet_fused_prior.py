@@ -162,7 +162,7 @@ class OrienterNet(BaseModel):
         return rotated_padded.squeeze(0) if is_3d else rotated_padded
 
 
-    def _stitch_panorama_bev(self, f_bev, valid_bev):
+    def _stitch_panorama_bev(self, f_bev, valid_bev, flip=None):
         """
         Stitches BEV features and masks from 3 panorama views by rotating them
         around the camera position to form a single, coherent 360-degree BEV.
@@ -170,6 +170,9 @@ class OrienterNet(BaseModel):
         Args:
             f_bev: [B, C, H, W] - BEV features for all 3 views.
             valid_bev: [B, H, W] - Valid masks for each view.
+            flip: [B//3] bool or None - mirrored panoramas (all 3 views mirrored with
+                the map). A mirror swaps the rig's two side directions, so view2 goes
+                into view3's slot (-120 deg) and view3 into view2's (+120 deg).
 
         Returns:
             f_bev_stitched: [B//3, C, H, W] - Stitched features for each panorama.
@@ -193,7 +196,8 @@ class OrienterNet(BaseModel):
             f_v1, v_v1 = f_bev[start_idx], valid_bev[start_idx]
             f_v2, v_v2 = f_bev[start_idx + 1], valid_bev[start_idx + 1]
             f_v3, v_v3 = f_bev[start_idx + 2], valid_bev[start_idx + 2]
-            
+            a2, a3 = (-120, 120) if flip is not None and bool(flip[i]) else (120, -120)
+
             # View 1 (0 deg yaw): The reference view, no rotation needed.
             f_v1_rot = self._rotate_bev_around_camera(f_v1, 0)
             v_v1_rot = (
@@ -203,20 +207,20 @@ class OrienterNet(BaseModel):
                 .squeeze(0) > 0.5
             )
             
-            # View 2 : Rotate its content by 120 deg to align.
-            f_v2_rot = self._rotate_bev_around_camera(f_v2, 120)
+            # View 2 : Rotate its content by 120 deg to align (-120 if mirrored).
+            f_v2_rot = self._rotate_bev_around_camera(f_v2, a2)
             v_v2_rot = (
                 self._rotate_bev_around_camera(
-                    v_v2.unsqueeze(0).float(), 120
+                    v_v2.unsqueeze(0).float(), a2
                 )
                 .squeeze(0) > 0.5
             )
 
-            # View 3 : Rotate its content by -120 deg to align.
-            f_v3_rot = self._rotate_bev_around_camera(f_v3, -120)
+            # View 3 : Rotate its content by -120 deg to align (+120 if mirrored).
+            f_v3_rot = self._rotate_bev_around_camera(f_v3, a3)
             v_v3_rot = (
                 self._rotate_bev_around_camera(
-                    v_v3.unsqueeze(0).float(), -120
+                    v_v3.unsqueeze(0).float(), a3
                 )
                 .squeeze(0) > 0.5
             )
@@ -320,16 +324,23 @@ class OrienterNet(BaseModel):
             if confidence_bev is not None:
                 confidence_bev_individual = confidence_bev.clone()
             
+            # Mirrored training panoramas (MapLocDataset mirrors all views of a panorama together)
+            flip = data.get("flip")
+            if flip is not None:
+                flip = flip.view(-1, self.num_views)
+                assert (flip == flip[:, :1]).all(), "the views of a panorama must share one flip"
+                flip = flip[:, 0]
+
             # Stitch the 3 views into a full panorama
             f_bev_stitched, valid_bev_stitched = self._stitch_panorama_bev(
-                f_bev, valid_bev
+                f_bev, valid_bev, flip
             )
-            
+
             confidence_bev_stitched = None
             if confidence_bev is not None:
                 # Also stitch confidence maps (they are like single-channel features)
                 confidence_bev_stitched, _ = self._stitch_panorama_bev(
-                    confidence_bev.unsqueeze(1), valid_bev
+                    confidence_bev.unsqueeze(1), valid_bev, flip
                 )
                 confidence_bev_stitched = confidence_bev_stitched.squeeze(1)
 

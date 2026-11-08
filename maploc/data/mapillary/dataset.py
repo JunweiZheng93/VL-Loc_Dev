@@ -1437,6 +1437,7 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
             self.image_dirs,
             self.tile_managers,
             image_ext=".jpg",
+            group_size=self.num_views,  # one flip per panorama in training
         )
 
     def dataloader(

@@ -18,7 +18,7 @@ from ..utils.geo import BoundaryBox
 from ..utils.io import read_image
 from ..utils.wrappers import Camera
 from .image import pad_image, rectify_image, resize_image
-from .utils import decompose_rotmat, random_flip, random_rot90
+from .utils import decompose_rotmat, flip_decision, random_flip, random_rot90
 
 
 class MapLocDataset(torchdata.Dataset):
@@ -76,8 +76,12 @@ class MapLocDataset(torchdata.Dataset):
         image_dirs: Dict[str, Path],
         tile_managers: Dict[str, TileManager],
         image_ext: str = "",
+        group_size: int = 1,
     ):
         self.stage = stage
+        # panoramas = `group_size` consecutive items, view1 first; in training they share one flip
+        self.group_size = group_size
+        self._group_flip = (None, None)  # (panorama, flip seed) of the last view1 loaded
         self.cfg = deepcopy(cfg)
         self.data = data
         self.image_dirs = image_dirs
@@ -107,6 +111,20 @@ class MapLocDataset(torchdata.Dataset):
         else:
             seed = [self.cfg.seed, idx]
         (seed,) = np.random.SeedSequence(seed).generate_state(1)
+        flip_seed = seed
+        if self.stage == "train" and self.group_size > 1:
+            # One flip decision per panorama: views 2/3 use view1's flip seed (independent flips
+            # would mirror single views of the rig).
+            group, view = divmod(idx, self.group_size)
+            if not self.cfg.random:  # deterministic seeds: view1's is known, any access order
+                (flip_seed,) = np.random.SeedSequence([self.cfg.seed, idx - view]).generate_state(1)
+            else:  # fresh seeds: remember view1's; the grouped samplers yield a panorama's views
+                # consecutively, view1 first, and a worker loads its batch in order
+                if view == 0:
+                    self._group_flip = (group, seed)
+                if self._group_flip[0] != group:
+                    raise RuntimeError(f"training panorama views must be loaded in order, view1 first (item {idx})")
+                flip_seed = self._group_flip[1]
 
         scene, seq, name = self.names[idx]
         if self.cfg.init_from_gps:
@@ -127,9 +145,10 @@ class MapLocDataset(torchdata.Dataset):
             xy_w_init - self.cfg.crop_size_meters,
             xy_w_init + self.cfg.crop_size_meters,
         )
-        return self.get_view(idx, scene, seq, name, seed, bbox_tile)
+        return self.get_view(idx, scene, seq, name, seed, bbox_tile, flip_seed)
 
-    def get_view(self, idx, scene, seq, name, seed, bbox_tile):
+    def get_view(self, idx, scene, seq, name, seed, bbox_tile, flip_seed=None):
+        flip_seed = seed if flip_seed is None else flip_seed
         data = {
             "index": idx,
             "name": name,
@@ -165,13 +184,15 @@ class MapLocDataset(torchdata.Dataset):
 
         # Map augmentations
         heading = np.deg2rad(90 - yaw)  # fixme
+        flipped = False
         if self.stage == "train":
             if self.cfg.augmentation.rot90:
                 raster, uv_gt, heading = random_rot90(raster, uv_gt, heading, seed)
             if self.cfg.augmentation.flip:
-                image, raster, uv_gt, heading = random_flip(
-                    image, raster, uv_gt, heading, seed
-                )
+                flipped = flip_decision(flip_seed)[0]  # the draw random_flip makes below
+                image, raster, uv_gt, heading = random_flip(image, raster, uv_gt, heading, flip_seed)
+                if flipped:
+                    roll = -roll  # a mirror reverses the camera roll (pitch unchanged)
         yaw = 90 - np.rad2deg(heading)  # fixme
 
         image, valid, cam, roll, pitch = self.process_image(
@@ -207,6 +228,9 @@ class MapLocDataset(torchdata.Dataset):
 
         if "chunk_index" in self.data:
             data["chunk_id"] = (scene, seq, self.data["chunk_index"][idx])
+
+        # mirrored sample: the fused prior stitches a mirrored panorama with swapped side views
+        data["flip"] = torch.tensor(flipped)
 
         return {
             **data,
