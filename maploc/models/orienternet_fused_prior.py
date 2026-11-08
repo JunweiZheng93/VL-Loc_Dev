@@ -272,7 +272,11 @@ class OrienterNet(BaseModel):
         scores = scores / num_valid[..., None, None]
         return scores
 
-    def _forward(self, data):
+    def _image_scores(self, data):
+        """Image branch up to the fused (x, y, yaw) log-scores, before the map prior
+        and masks. Returns (pred, pred_map, scores [B/3, H, W, N_rot], is_panorama, extras)
+        so that subclasses can add further evidence (e.g. a text likelihood) to `scores`
+        and then call `_finalize`."""
         pred = {}
         pred_map = pred["map"] = self.map_encoder(data)
         f_map = pred_map["map_features"][0]
@@ -333,6 +337,8 @@ class OrienterNet(BaseModel):
         else:
             # Standard single-view processing
             f_bev_final, valid_bev_final, confidence_bev_final = f_bev, valid_bev, confidence_bev
+            features_bev_individual, valid_bev_individual = f_bev, valid_bev
+            confidence_bev_individual = confidence_bev
 
         # --- Stage 1: Pano mode for robust (x,y) prior ---
         # Use the final BEV features for exhaustive voting
@@ -372,6 +378,19 @@ class OrienterNet(BaseModel):
         fused_scores = (1 - self.fusion_beta) * log_probs_pano + self.fusion_beta * yaw_log_heatmap.view(B_pano, 1, 1, N_rot)
         scores = log_softmax_spatial(fused_scores) # Re-normalize after fusion
 
+        extras = {
+            "f_image": f_image,
+            "features_bev_individual": features_bev_individual,
+            "valid_bev_individual": valid_bev_individual,
+            "confidence_bev_individual": confidence_bev_individual,
+            "f_bev_final": f_bev_final,
+            "valid_bev_final": valid_bev_final,
+            "confidence_bev_final": confidence_bev_final,
+        }
+        return pred, pred_map, scores, is_panorama, extras
+
+    def _finalize(self, pred, pred_map, scores, data, is_panorama, extras):
+        """Map prior, masks, re-normalisation and read-outs (tail of the forward)."""
         if "log_prior" in pred_map and self.conf.apply_map_prior:
             scores = scores + pred_map["log_prior"][0].unsqueeze(-1)
 
@@ -397,15 +416,19 @@ class OrienterNet(BaseModel):
             "uvr_expectation": uvr_avg,
             "uv_expectation": uvr_avg[..., :2],
             "yaw_expectation": uvr_avg[..., 2],
-            "features_image": f_image,
-            "features_bev_individual": features_bev_individual,
-            "valid_bev_individual": valid_bev_individual,
-            "confidence_bev_individual": confidence_bev_individual,
-            "features_bev": f_bev_final,
-            "valid_bev": valid_bev_final,
-            "confidence_bev": confidence_bev_final,
+            "features_image": extras["f_image"],
+            "features_bev_individual": extras["features_bev_individual"],
+            "valid_bev_individual": extras["valid_bev_individual"],
+            "confidence_bev_individual": extras["confidence_bev_individual"],
+            "features_bev": extras["f_bev_final"],
+            "valid_bev": extras["valid_bev_final"],
+            "confidence_bev": extras["confidence_bev_final"],
             "is_panorama": is_panorama,
         }
+
+    def _forward(self, data):
+        pred, pred_map, scores, is_panorama, extras = self._image_scores(data)
+        return self._finalize(pred, pred_map, scores, data, is_panorama, extras)
 
     def loss(self, pred, data):
         # Handle panorama batches - use ground truth from view1 of each panorama
