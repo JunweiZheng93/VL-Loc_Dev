@@ -17,6 +17,8 @@ defaults:
 
 model:
   name: orienternet_fused_prior   # 对齐参考实验(而非 orienternet_pano 默认的 masking)
+  pano_geometry_fix: false        # Issue1(docs/research-LR-BEV-runs.md §6.8):false = 旧几何(2026-11-08 及以前的所有 run);
+                                  # 新 run 用 model.pano_geometry_fix=true。会改变评测结果,checkpoint 要按训练时的取值评测
 
 experiment:
   gpus: 1                         # 单卡

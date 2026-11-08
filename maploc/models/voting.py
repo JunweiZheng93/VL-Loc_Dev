@@ -12,12 +12,13 @@ from .utils import make_grid, rotmat2d
 
 
 class TemplateSampler(torch.nn.Module):
-    def __init__(self, grid_xz_bev, ppm, num_rotations, optimize=True):
+    def __init__(self, grid_xz_bev, ppm, num_rotations, optimize=True, ksize=None):
         super().__init__()
 
         Δ = 1 / ppm
         h, w = grid_xz_bev.shape[:2]
-        ksize = max(w, h * 2 + 1)
+        if ksize is None:  # single-view BEV: the camera is at its bottom centre
+            ksize = max(w, h * 2 + 1)
         radius = ksize * Δ
         grid_xy = make_grid(
             radius,

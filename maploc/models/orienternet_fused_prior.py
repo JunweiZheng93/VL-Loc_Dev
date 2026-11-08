@@ -8,7 +8,13 @@ from torch.nn.functional import normalize
 from . import get_model
 from .base import BaseModel
 from .bev_net import BEVNet
-from .bev_projection import CartesianProjection, PolarProjectionDepth, make_oval_pano_grid, make_pano_grid
+from .bev_projection import (
+    CartesianProjection,
+    PolarProjectionDepth,
+    make_oval_pano_grid,
+    make_pano_canvas_grid,
+    make_pano_grid,
+)
 from .map_encoder import MapEncoder
 from .metrics_v1gt import AngleError, AngleRecall, Location2DError, Location2DRecall
 from .voting import (
@@ -53,6 +59,13 @@ class OrienterNet(BaseModel):
         "normalize_scores_by_num_valid": True,
         "prior_renorm": True,
         "retrieval_dim": None,
+        # Issue1 (docs/research-LR-BEV-runs.md §6.8). False = legacy geometry of all runs up to
+        # 2026-11-08: the panorama template samples the 4H x W stitched canvas as if it were the
+        # 129 x 129 make_pano_grid (squeezed by 221/129 in x, 256/129 in y), views 2/3 are rotated
+        # about a point 0.5 m in front of the camera, and the panorama scores are normalised with
+        # the single-view sampler. True fixes all three. Changes evaluation: keep checkpoints on
+        # the value they were trained with (configs without the key are legacy).
+        "pano_geometry_fix": False,
     }
 
 
@@ -82,9 +95,17 @@ class OrienterNet(BaseModel):
             self.projection_bev.grid_xz, ppm, conf.num_rotations
         )
         grid_xz_pano = make_pano_grid(conf.z_max, ppm)
-        self.template_sampler_pano = TemplateSampler(
-            grid_xz_pano, ppm, conf.num_rotations
-        )
+        if conf.pano_geometry_fix:
+            # Sample the stitched canvas (4H x W) at its own metric grid. The kernel keeps the legacy
+            # size (±64.5 m for z_max 32), which holds every stitched cell (they reach 63.6 m).
+            self.template_sampler_pano = TemplateSampler(
+                make_pano_canvas_grid(conf.z_max, conf.x_max, ppm), ppm, conf.num_rotations,
+                ksize=2 * grid_xz_pano.shape[0] + 1,
+            )
+        else:  # legacy: normalised as if the canvas were the 129 x 129 make_pano_grid
+            self.template_sampler_pano = TemplateSampler(
+                grid_xz_pano, ppm, conf.num_rotations
+            )
         self.scale_classifier = torch.nn.Linear(conf.latent_dim, conf.num_scale_bins)
         if conf.bev_net is None:
             self.feature_projection = torch.nn.Linear(
@@ -128,9 +149,10 @@ class OrienterNet(BaseModel):
         sin_a = torch.sin(torch.tensor(angle_rad, dtype=dtype, device=device))
         R = torch.tensor([[cos_a, -sin_a], [sin_a,  cos_a]], dtype=dtype, device=device)
 
-        # The original center of the camera ((W-1)/2, H-1)
+        # The camera (z = 0) is one row below the BEV's last row (z = Δ), i.e. row 2H of the padded
+        # canvas. The legacy geometry rotates about row 2H - 1, 0.5 m in front of the camera.
         center_pix_x = (W - 1) / 2
-        center_pix_y = 2*H - 1
+        center_pix_y = 2 * H if self.conf.pano_geometry_fix else 2 * H - 1
 
         # Create the rotate matrix
         T1 = torch.tensor([[1, 0, -center_pix_x], [0, 1, -center_pix_y], [0, 0, 1]], dtype=dtype, device=device)
@@ -257,6 +279,9 @@ class OrienterNet(BaseModel):
             f_bev = f_bev * confidence_bev.unsqueeze(1)
         f_bev = f_bev.masked_fill(~valid_bev.unsqueeze(1), 0.0)
         if is_panorama:
+            if self.conf.pano_geometry_fix:  # the fixed sampler is built for the stitched canvas only
+                H, W = self.projection_bev.grid_xz.shape[:2]
+                assert f_bev.shape[-2:] == (4 * H, W), f_bev.shape
             templates = self.template_sampler_pano(f_bev)
         else:
             templates = self.template_sampler(f_bev)
@@ -271,10 +296,17 @@ class OrienterNet(BaseModel):
 
         # Reweight the different rotations based on the number of valid pixels in each
         # template. Axis-aligned rotation have the maximum number of valid pixels.
-        valid_templates = self.template_sampler(valid_bev.float().unsqueeze(1)) > (1 - 1e-4)
-        num_valid = valid_templates.float().sum((-3, -2, -1))
+        num_valid = self._num_valid(valid_bev, is_panorama)
         scores = scores / num_valid[..., None, None]
         return scores
+
+    def _num_valid(self, valid_bev, is_panorama):
+        """Number of valid template cells per rotation, [B, N_rot]. The legacy geometry counts the
+        panorama templates with the single-view sampler too (about 1/4 of their cells)."""
+        fixed = is_panorama and self.conf.pano_geometry_fix
+        sampler = self.template_sampler_pano if fixed else self.template_sampler
+        valid_templates = sampler(valid_bev.float().unsqueeze(1)) > (1 - 1e-4)
+        return valid_templates.float().sum((-3, -2, -1))
 
     def _image_scores(self, data):
         """Image branch up to the fused (x, y, yaw) log-scores, before the map prior

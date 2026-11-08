@@ -118,6 +118,15 @@ def make_pano_grid(z_max, ppm):
     )
     return grid_xz_pano
 
+def make_pano_canvas_grid(z_max, x_max, ppm):
+    """Metric grid of the canvas built by OrienterNet._stitch_panorama_bev (orienternet_fused_prior):
+    the views' (z_max * ppm) x (2 * x_max * ppm + 1) BEVs padded to 4x their height, the camera (0, 0)
+    at row 2 * z_max * ppm and the centre column, y along view1's forward axis."""
+    Δ = 1 / ppm
+    return make_grid(
+        w=x_max * 2 + Δ, h=z_max * 4, step_x=Δ, step_y=Δ, orig_x=-x_max, orig_y=Δ - z_max * 2, y_up=True
+    )
+
 def make_oval_pano_grid(z_max, x_max, ppm):
     Δ = 1 / ppm
     
