@@ -20,3 +20,6 @@ aiolimiter
 scikit-learn
 urllib3>=2
 shapely
+transformers
+sentencepiece
+protobuf

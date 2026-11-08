@@ -1179,6 +1179,7 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
         self.dumps = {}
         self.tile_managers = {}
         self.image_dirs = {}
+        self.captions = {}
         names = []
 
         for scene in self.cfg.scenes:
@@ -1223,6 +1224,17 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
                 self.root / scene / self.images_dirname
             )
             assert self.image_dirs[scene].exists(), self.image_dirs[scene]
+
+            if self.cfg.captions:
+                # view captions (text branch): {"<id>_view1.jpg": "..."} keyed by view name;
+                # captions=true reads <scene>.json, captions=<suffix> reads <scene>_<suffix>.json (e.g. stageA)
+                suffix = "" if self.cfg.captions is True else f"_{self.cfg.captions}"
+                path = self.root / "captions" / f"{scene}{suffix}.json"
+                with path.open("r") as fp:
+                    self.captions[scene] = {
+                        k.rsplit(".", 1)[0]: v for k, v in json.load(fp).items()
+                    }
+                logger.info("Loaded %d captions for %s from %s.", len(self.captions[scene]), scene, path.name)
 
             for seq, data in self.dumps[scene].items():
                 for name in data["views"]:
@@ -1437,6 +1449,7 @@ class MapillaryPanoDataModule(pl.LightningDataModule):
             self.image_dirs,
             self.tile_managers,
             image_ext=".jpg",
+            captions=self.captions if self.cfg.captions else None,
             group_size=self.num_views,  # one flip per panorama in training
         )
 

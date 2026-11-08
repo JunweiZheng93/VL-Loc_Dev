@@ -18,7 +18,7 @@ from ..utils.geo import BoundaryBox
 from ..utils.io import read_image
 from ..utils.wrappers import Camera
 from .image import pad_image, rectify_image, resize_image
-from .utils import decompose_rotmat, flip_decision, random_flip, random_rot90
+from .utils import decompose_rotmat, flip_decision, mirror_raster, random_flip, random_rot90
 
 
 class MapLocDataset(torchdata.Dataset):
@@ -31,6 +31,9 @@ class MapLocDataset(torchdata.Dataset):
         "num_classes": None,
         "pixel_per_meter": "???",
         "crop_size_meters": "???",
+        # half-width (m) of a second, uncut raster around the same centre ("map_desc", uint8): the text
+        # verifiers compute egocentric map descriptors on it, the model crop cuts off-centre 64 m wedges
+        "desc_crop_meters": None,
         "max_init_error": "???",
         "max_init_error_rotation": None,
         "init_from_gps": False,
@@ -39,6 +42,8 @@ class MapLocDataset(torchdata.Dataset):
         # eval-only: keep a single view stream per panorama (e.g. "view1");
         # None = keep all views. Filters splits before packing; training keeps None.
         "keep_view": None,
+        # attach the per-view caption string (text branch); see MapillaryPanoDataModule
+        "captions": False,
         # pose priors
         "add_map_mask": False,
         # road constraint prior
@@ -76,9 +81,11 @@ class MapLocDataset(torchdata.Dataset):
         image_dirs: Dict[str, Path],
         tile_managers: Dict[str, TileManager],
         image_ext: str = "",
+        captions: Dict[str, Dict[str, str]] = None,
         group_size: int = 1,
     ):
         self.stage = stage
+        self.captions = captions  # scene -> {view name -> caption}
         # panoramas = `group_size` consecutive items, view1 first; in training they share one flip
         self.group_size = group_size
         self._group_flip = (None, None)  # (panorama, flip seed) of the last view1 loaded
@@ -177,6 +184,10 @@ class MapLocDataset(torchdata.Dataset):
 
         # raster extraction
         canvas = self.tile_managers[scene].query(bbox_tile)
+        raster_d = None
+        if self.cfg.desc_crop_meters:
+            d = self.cfg.desc_crop_meters
+            raster_d = self.tile_managers[scene].query(BoundaryBox(bbox_tile.center - d, bbox_tile.center + d)).raster
         xy_w_gt = self.data["t_c2w"][idx][:2].numpy()
         uv_gt = canvas.to_uv(xy_w_gt)
         uv_init = canvas.to_uv(bbox_tile.center)
@@ -187,11 +198,15 @@ class MapLocDataset(torchdata.Dataset):
         flipped = False
         if self.stage == "train":
             if self.cfg.augmentation.rot90:
+                if raster_d is not None:  # same seed = same rotation, about the same centre
+                    raster_d = random_rot90(raster_d, uv_gt, heading, seed)[0]
                 raster, uv_gt, heading = random_rot90(raster, uv_gt, heading, seed)
             if self.cfg.augmentation.flip:
-                flipped = flip_decision(flip_seed)[0]  # the draw random_flip makes below
+                flipped, flip_x = flip_decision(flip_seed)  # the draws random_flip makes below
                 image, raster, uv_gt, heading = random_flip(image, raster, uv_gt, heading, flip_seed)
                 if flipped:
+                    if raster_d is not None:  # centred like the model crop: the same mirror
+                        raster_d = mirror_raster(raster_d, flip_x)
                     roll = -roll  # a mirror reverses the camera roll (pitch unchanged)
         yaw = 90 - np.rad2deg(heading)  # fixme
 
@@ -229,7 +244,12 @@ class MapLocDataset(torchdata.Dataset):
         if "chunk_index" in self.data:
             data["chunk_id"] = (scene, seq, self.data["chunk_index"][idx])
 
-        # mirrored sample: the fused prior stitches a mirrored panorama with swapped side views
+        if raster_d is not None:
+            data["map_desc"] = torch.from_numpy(np.ascontiguousarray(raster_d))
+        if self.captions is not None:
+            data["caption"] = self.captions.get(scene, {}).get(name, "")
+        # mirrored sample: the fused prior stitches a mirrored panorama with swapped side views,
+        # the text verifiers mirror their caption predictions
         data["flip"] = torch.tensor(flipped)
 
         return {
