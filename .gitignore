@@ -1,9 +1,11 @@
 datasets/
 viz_kitti/
-experiments/
+experiments
 outputs/
 docs/
-eval_logs/
+# development-only scripts (preliminary studies, analysis helpers); their results are in docs/
+maploc/dev/
+eval_logs
 contrastive_logs/
 fine_tune/
 train_from_scratch/
