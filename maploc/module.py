@@ -75,8 +75,18 @@ class GenericModule(pl.LightningModule):
             eps=1e-8
             )
         '''
+        params = self.parameters()
+        lr_text = self.cfg.training.get("lr_text")
+        if lr_text is not None and hasattr(self.model, "text_parameter_names"):
+            # new text-branch modules train at their own rate; the base keeps training.lr
+            text = set(self.model.text_parameter_names())
+            named = list(self.model.named_parameters())
+            params = [
+                {"params": [p for n, p in named if n not in text]},
+                {"params": [p for n, p in named if n in text], "lr": lr_text},
+            ]
         optimizer = torch.optim.Adam(
-            self.parameters(), 
+            params,
             lr=self.cfg.training.lr, 
             weight_decay=self.cfg.training.get('weight_decay', 1e-5)
             )   
@@ -180,7 +190,7 @@ class GenericModule(pl.LightningModule):
                 "scheduler": scheduler,
                 "interval": "epoch",
                 "frequency": 1,
-                "monitor": "loss/total/val",
+                "monitor": cfg_scheduler.get("monitor", "loss/total/val"),
                 "strict": True,
                 "name": "learning_rate",
             }
